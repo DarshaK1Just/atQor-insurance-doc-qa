@@ -1,0 +1,24 @@
+# Streamlit theme — LOCKED to light.
+#
+# Why this file exists: the UI's custom CSS is built for a light canvas (white
+# cards, navy accents). Without this file Streamlit inherits the viewer's OS/
+# browser colour scheme, so on a dark-mode machine the light cards floated on a
+# near-black background — which is exactly why the corpus cards looked like they
+# were "intersecting their boundaries" and the whole page read as noisy.
+# Pinning base = "light" makes Streamlit's own chrome agree with the CSS.
+
+[theme]
+base = "light"
+primaryColor = "#4F6BED"            # indigo accent — buttons, progress, focus ring
+backgroundColor = "#F5F7FB"         # app canvas (cool light grey)
+secondaryBackgroundColor = "#FFFFFF" # cards, inputs, sidebar
+textColor = "#0E1726"               # near-black ink
+font = "sans serif"
+
+[client]
+# Hide the "Deploy" button and hamburger dev menu — this is a product, not a dev tool.
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[browser]
+gatherUsageStats = false

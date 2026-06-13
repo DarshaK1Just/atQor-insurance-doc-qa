@@ -8,8 +8,18 @@ multi-turn follow-ups, and cross-document comparisons**.
 > **Design philosophy:** every step that requires intelligence is delegated to an Azure
 > AI model; Python is a thin, typed control plane. Layout detection → Document
 > Intelligence. Document classification, coreference resolution, query planning,
-> grounded synthesis, refusal decisions, and evaluation → Azure OpenAI. Lexical +
-> semantic ranking → Azure AI Search. There are no hand-rolled heuristics.
+> **agentic retrieval self-grading**, grounded synthesis, refusal decisions, and
+> evaluation → an Azure chat model. Lexical + semantic ranking → Azure AI Search.
+> There are no hand-rolled heuristics, and **no orchestration framework** — the agentic
+> loop is plain, testable code on the Azure SDKs (assignment §2).
+
+> **Chat model — free by design.** The chat model is env-pluggable. The reference
+> deployment runs **Kimi-k2.6**, a free serverless model on Azure AI Foundry, in place of
+> the paid Azure OpenAI GPT-4o (the assignment asks for "GPT-4o **or equivalent**", §5,
+> and permits free-tier substitutions, §10). The code **auto-detects model capabilities**
+> at runtime — deployments that support Structured Outputs (gpt-4o) use the schema-enforced
+> path; those that don't (Kimi) transparently fall back to JSON mode — so the same codebase
+> runs on either with zero edits. Set `AZURE_OPENAI_CHAT_DEPLOYMENT` to your deployment name.
 
 ---
 
@@ -43,16 +53,19 @@ flowchart LR
     subgraph Ingestion [async per document]
         U[Upload PDF/DOCX/Image] --> B[(Blob Storage)]
         U --> DI[Document Intelligence\nprebuilt-layout → Markdown + page spans]
-        DI --> CL[GPT-4o-mini\ndoc-type classification]
+        DI --> CL[Chat LLM\ndoc-type classification]
         CL --> CH[Hybrid structural chunker\nheadings → 512-tok cap, tables whole]
         CH --> EM[text-embedding-3-small]
         EM --> IX[(Azure AI Search\nhybrid index)]
     end
     subgraph Query [per chat turn]
-        Q[Question + history] --> PL[GPT-4o-mini\nrewrite + intent — one structured call]
+        Q[Question + history] --> PL[Chat LLM\nrewrite + intent]
         PL -->|simple| HS[Hybrid search\nBM25 + vector + RRF]
         PL -->|comparison| FO[Facet doc list →\nper-document fan-out]
-        HS --> GA[GPT-4o-mini grounded answer\nStructured Outputs citations + refusal gate]
+        HS --> GR{Chat LLM\nevidence sufficient?}
+        GR -->|no| RQ[Refine query →\nre-search widened]
+        RQ --> GA
+        GR -->|yes| GA[Chat LLM grounded answer\ncitations + refusal gate]
         FO --> GA
         GA --> UI[Chat UI\nclickable page citations]
     end
@@ -63,11 +76,13 @@ flowchart LR
 **Data flow:** `POST /documents` returns `202 + doc_id` immediately; a background task runs
 extract → classify → chunk → embed → index with a per-stage status machine
 (`uploaded → extracting → classifying → chunking → indexing → ready | failed`). The UI
-auto-polls every 2 s via an `st.fragment(run_every=2)` and renders a live stepper per
-document. Chat turns run plan → retrieve → gate → generate; the `POST /chat/stream` SSE
-endpoint emits typed `planning / planned / retrieving / retrieved / generating / done`
-events so the UI shows an *agentic trace* in real time. One correlation ID traces the
-whole turn through every structured log line.
+auto-polls via an `st.fragment(run_every=…)` **only while ingestion is in flight** (it goes
+calm — no flicker — once everything is ready) and renders a live status card per document.
+Chat turns run **plan → retrieve → self-grade → (corrective re-query) → generate**; the
+`POST /chat/stream` SSE endpoint emits typed `planning / planned / retrieving / grading /
+refining / graded / retrieved / generating / token / done` events so the UI shows an
+*agentic trace* — including the evidence-sufficiency check — in real time. One correlation
+ID traces the whole turn through every structured log line.
 
 ## Azure services used and why
 
@@ -75,7 +90,8 @@ whole turn through every structured log line.
 |---|---|---|
 | **Azure AI Document Intelligence** (`prebuilt-layout`, API 2024-11-30, Markdown output) | Extraction | One API covers all 5 required formats with OCR, tables, heading hierarchy, and `pages[].spans` — the character offsets that make **exact page citations** possible. Chosen over the AI Search Layout *skill*, whose markdown mode drops page numbers and text mode drops headings. |
 | **Azure AI Search** (Free tier) | Retrieval | Hybrid BM25 + vector + RRF in one query. Insurance questions mix exact tokens (policy numbers, "$500") where BM25 wins and paraphrases ("outpatient" vs "ambulatory") where vectors win. Push-model indexing keeps chunk metadata (page, section, type) under our control. |
-| **Azure OpenAI** (gpt-4o-mini + text-embedding-3-small) | All reasoning | Embeddings: 3-small beats the brief's example ada-002 on MTEB at 1/5 the price ("or equivalent" exercised). gpt-4o-mini handles query planning, classification, grounded answering and LLM-judge evaluation for pennies; `CHAT_MODEL` is env-switchable to gpt-4o. |
+| **Azure chat model** (reference: **Kimi-k2.6**, free serverless on Azure AI Foundry; or Azure OpenAI gpt-4o/-mini) | All reasoning | Handles query planning, classification, retrieval self-grading, grounded answering and LLM-judge evaluation. Kimi is a **free** GPT-4o-*equivalent* chat-completions model on Azure (§5 "or equivalent", §10 free-tier substitution); `AZURE_OPENAI_CHAT_DEPLOYMENT` is env-switchable to gpt-4o. Capabilities are auto-detected (Structured Outputs vs JSON mode). |
+| **Azure OpenAI embeddings** (text-embedding-3-small, 1536-d) | Vector search | 3-small beats the brief's example ada-002 on MTEB at ~1/5 the price ("or equivalent" exercised); cost is pennies (the only non-free line, ~$0.10–0.50 total). |
 | **Azure Blob Storage** | Originals + extracts | Citation click-through and re-processing without re-paying extraction. Optional — the app degrades to local disk so the core flow runs with just three services. |
 
 ## Key design decisions (and rejected alternatives)
@@ -111,10 +127,20 @@ whole turn through every structured log line.
    question) into a standalone query (resolving "that same policy") *and* routes intent —
    the canonical pattern from Microsoft's azure-search-openai-demo. Raw history pollutes
    retrieval; Search's built-in `queryRewrites` is preview and not conversation-aware.
-7. **No orchestration framework.** The RAG loop is ~200 lines of visible, testable code.
-   LangChain is in maintenance mode, Semantic Kernel is mid-merge into Agent Framework,
-   and Prompt Flow was retired in April 2026 — stable Azure SDKs are the lowest-risk
-   dependency surface, and frameworks would hide exactly the decisions this exercise assesses.
+7. **No orchestration framework (assignment §2: "no third-party wrappers unless justified").**
+   The RAG loop is a few hundred lines of visible, testable code on the stable Azure SDKs —
+   the lowest-risk dependency surface, and the most directly graded ("correct and efficient
+   use of Azure SDKs", §8 Azure Integration). A wrapper like LangChain/LangGraph would hide
+   exactly the retrieval, grounding and citation decisions this exercise assesses, so the
+   "smart" behaviour is built explicitly instead (see §8 below).
+8. **Agentic, self-correcting retrieval (Corrective-RAG).** A simple-intent turn doesn't blindly
+   trust its first search. An LLM **retrieval critic** judges whether the retrieved snippets can
+   answer the question; if not, it proposes a **refined query** and the loop re-searches (widened
+   top-k) and merges the evidence before generating — a genuine "is this enough, and if not, how do
+   I search better?" decision, surfaced live in the UI trace. It is bounded (`AGENTIC_MAX_RETRIES`,
+   default 1), fails open (any grader error proceeds with the original evidence, never blocking an
+   answer), and is disableable (`AGENTIC_RAG=false`) for the leanest path. Comparison intent already
+   fans out across every document, so grading is applied only to simple-intent turns.
 
 ## Assignment requirements — line-by-line coverage
 
@@ -148,6 +174,9 @@ whole turn through every structured log line.
 | **§10** "Document resource limitations and how you'd implement with full access" | Free-tier table above + Known limitations & production path below |
 
 ## Setup
+
+> 📘 **Full step-by-step provisioning, the free Foundry/Kimi path, and troubleshooting live in
+> [`docs/SETUP.md`](docs/SETUP.md).** The quickstart below is the automated Azure-CLI path.
 
 **Cost: $0 out of pocket** when you stay on free SKUs and delete the resource group
 after the demo. The Azure Free Account requires a card for identity verification only,
@@ -186,23 +215,44 @@ low-friction fallback for free-trial reviewers.
 
 ## UI walkthrough
 
-The Streamlit frontend is built for an insurance operations analyst — a non-technical
-reviewer should land on it and feel productive within 10 seconds.
+The Streamlit frontend is built as a **two-step, guided flow** for an insurance operations
+analyst — a non-technical reviewer should land on it and feel productive within 10 seconds.
+It runs on a locked light theme (`.streamlit/config.toml`) so it renders identically on any
+machine.
 
-- **Top bar** — health pill showing how many Azure services are configured, the active
-  chat model, and the current session id.
-- **Left rail — Document corpus** — drag-drop multi-upload, a **Load demo corpus**
-  one-click that ingests every bundled sample, and per-document cards with a
-  **6-step live stepper** (`uploaded → extracting → classifying → chunking → indexing →
-  ready`) that auto-refreshes every 2 s while anything is processing.
-- **Right pane — Chat** — empty state with four assignment-aligned suggested-question
-  chips; messages stream in with a typed *agentic trace* (planning / retrieving /
-  generating) before the grounded answer renders.
-- **Citations** — every `[n]` becomes a clickable chip that opens an inline preview
-  pane with the verbatim quote and an **embedded PDF/image render of the exact cited
-  page** (PDFs jump to `#page=N`; images render at full width).
-- **Controls** — *New chat* (also clears server-side session), *Clear preview*,
-  per-message metadata footer (rewritten query · intent · confidence · citation count).
+- **Top bar** — product identity plus pills for the active chat model, the session id, and
+  a health indicator (how many Azure services are configured).
+- **① Your documents** (left) — drag-drop multi-upload (ingestion starts automatically, no
+  button), a one-click **Load demo corpus**, and a clean per-document card showing type,
+  a live progress bar with the current stage while processing, and `pages · chunks` when ready.
+  The list **auto-refreshes only while something is processing**, then goes completely calm
+  (a fragment re-runs in place — the whole page never reloads, so there's no flicker).
+- **② Ask your documents** (right) — **state-aware and gated**: a cold-start hero with a
+  3-step "how it works" strip when empty, an "indexing…" notice while documents process, and
+  suggested-question chips once at least one document is ready. The chat input stays disabled
+  (with an explanatory placeholder) until you can actually get a grounded answer.
+- **Agentic trace** — each turn streams a live trace: *understanding → searching → checking
+  the evidence is sufficient* (the Corrective-RAG step; shows "re-searching" when it refines)
+  *→ grounding the answer*, with tokens streaming in as the model writes.
+- **Citations** — every `[n]` becomes a clickable chip that opens a preview dialog with the
+  verbatim quote and an **embedded PDF/image render of the exact cited page** (PDFs jump to
+  `#page=N`; images render at full width), plus a footer with rewritten query · intent ·
+  confidence · citation count, and an honest "insufficient context" notice when relevant.
+- **Controls** — *New chat* (also clears the server-side session).
+
+## Performance notes
+
+- **No wasted round-trips on Kimi.** Structured Outputs is attempted only when the deployment
+  supports it; the result is cached process-wide (`STRUCTURED_OUTPUTS=auto`), so Kimi turns go
+  straight to JSON mode instead of failing a schema call first on **every** planner + answerer
+  request. Set `STRUCTURED_OUTPUTS=off` to skip it from turn one.
+- **Faster reloads.** `tiktoken` (the BPE table is ~1 s to load) is now loaded lazily on first
+  chunk rather than at import, so backend `--reload` cycles are quicker. For demos/recording,
+  run `uvicorn src.api.main:app` **without** `--reload`.
+- **Cold-start hiding.** Free serverless models scale to zero; set `WARMUP_ON_STARTUP=true` to
+  fire a tiny embed+chat call on boot (in a daemon thread) so the first real question is fast.
+- **Already-parallel:** multi-document ingestion, F0 page-window extraction, embedding batches,
+  and comparison fan-out all run concurrently across thread pools.
 
 ## Sample test scenarios (assignment §7)
 
@@ -219,7 +269,10 @@ reviewer should land on it and feel productive within 10 seconds.
 - **DOCX page numbers are synthetic** (DI treats 3,000 chars as one "page") — DOCX
   citations anchor to section headings instead of faking page numbers; the UI says so.
 - **Free Search tier:** no semantic reranker (design seam documented above), 50 MB index,
-  no SLA. Production: Basic/S1 + semantic ranker + freshness scoring profile.
+  no SLA. Production: Basic/S1 + semantic ranker + freshness scoring profile. **Free drop-in
+  today:** a **Cohere Rerank** serverless deployment on Azure AI Foundry (also free) can act as
+  an L2 reranker over the hybrid candidates — a clean future enhancement that needs only a
+  rerank call between `searcher.hybrid_search` and the answerer.
 - **In-process ingestion + in-memory sessions with 24-hour sliding TTL** (demo scope).
   Production: Blob → Event Grid → Service Bus → KEDA-scaled workers behind the same
   `process_document` seam; sessions in Cosmos DB; hosting on Azure Container Apps per

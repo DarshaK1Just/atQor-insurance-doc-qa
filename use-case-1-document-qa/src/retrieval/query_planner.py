@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from src.core.azure_clients import openai_client
 from src.core.config import get_settings
 from src.core.logging import get_logger
+from src.core.model_caps import mark_unsupported, supports_structured_outputs
 
 log = get_logger("query_planner")
 
@@ -46,13 +47,17 @@ def _build_messages(history: list[dict], question: str) -> list[dict]:
 
 
 def _try_structured(messages: list[dict], model: str) -> QueryPlan | None:
-    """Preferred path: Azure OpenAI Structured Outputs (zero parsing)."""
+    """Preferred path: Azure OpenAI Structured Outputs (zero parsing). Skipped
+    entirely once the deployment is known not to support it — see model_caps."""
+    if not supports_structured_outputs():
+        return None
     try:
         completion = openai_client().beta.chat.completions.parse(
             model=model, temperature=0, messages=messages, response_format=QueryPlan,
         )
         return completion.choices[0].message.parsed
     except Exception as exc:
+        mark_unsupported()
         log.info("structured_outputs_unsupported", error=type(exc).__name__,
                  hint="Falling back to JSON-mode (model likely doesn't support Structured Outputs).")
         return None

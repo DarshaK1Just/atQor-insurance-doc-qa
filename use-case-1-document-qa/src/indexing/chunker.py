@@ -13,18 +13,26 @@ Character offsets into the original markdown are tracked through every split so
 each chunk can be mapped to exact page numbers via DI's pages[].spans."""
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from src.core.config import get_settings
 
-try:
-    import tiktoken
-    _ENC = tiktoken.get_encoding("cl100k_base")
 
-    def _tokens(text: str) -> int:
-        return len(_ENC.encode(text))
-except Exception:  # pragma: no cover - offline fallback
-    def _tokens(text: str) -> int:
-        return max(1, len(text) // 4)
+@lru_cache(maxsize=1)
+def _encoder():
+    """Load the BPE encoder lazily, once. Importing tiktoken and loading the
+    cl100k_base table costs ~1s; doing it on first chunk (not module import)
+    keeps backend reloads fast. Returns None when tiktoken is unavailable."""
+    try:
+        import tiktoken
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:  # pragma: no cover - offline fallback
+        return None
+
+
+def _tokens(text: str) -> int:
+    enc = _encoder()
+    return len(enc.encode(text)) if enc is not None else max(1, len(text) // 4)
 
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
 _HTML_TABLE_RE = re.compile(r"<table>.*?</table>", re.DOTALL | re.IGNORECASE)

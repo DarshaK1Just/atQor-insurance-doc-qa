@@ -64,14 +64,47 @@ def _prune_sessions() -> None:
         log.info("sessions_pruned", count=len(expired))
 
 
-@app.on_event("startup")
-def startup() -> None:
+def _warmup() -> None:
+    """Best-effort: fire one tiny embed + chat call so the FIRST real query
+    doesn't pay the serverless cold-start (free Foundry models scale to zero).
+    Runs in a daemon thread; every failure is logged and ignored."""
+    settings = get_settings()
+    try:
+        from src.indexing.embedder import embed_query
+        embed_query("warmup")
+    except Exception as exc:
+        log.info("warmup_embed_skipped", error=type(exc).__name__)
+    try:
+        from src.core.azure_clients import openai_client
+        openai_client().chat.completions.create(
+            model=settings.azure_openai_chat_deployment,
+            messages=[{"role": "user", "content": "ping"}], max_tokens=1, temperature=0,
+        )
+        log.info("warmup_complete")
+    except Exception as exc:
+        log.info("warmup_chat_skipped", error=type(exc).__name__)
+
+
+def _boot_tasks() -> None:
+    """Index check (+ optional warmup) in the background so the server binds the
+    port instantly. Previously these ran inline in the startup event; if Azure
+    was slow/unreachable the index check's retries delayed 'startup complete' by
+    up to a minute. Now boot is immediate and these self-heal in the background."""
     try:
         ensure_index()
-        log.info("startup_complete", index=get_settings().search_index_name)
+        log.info("startup_index_ready", index=get_settings().search_index_name)
     except Exception as exc:
         log.error("startup_index_unavailable", error=str(exc),
-                  hint="Check SEARCH_ENDPOINT / SEARCH_KEY in .env (see infra/provision.sh).")
+                  hint="Check SEARCH_ENDPOINT / SEARCH_KEY / network reachability (see docs/SETUP.md).")
+    if get_settings().warmup_on_startup:
+        _warmup()
+
+
+@app.on_event("startup")
+def startup() -> None:
+    import threading
+    threading.Thread(target=_boot_tasks, name="boot", daemon=True).start()
+    log.info("startup_complete")
 
 
 @app.get("/health")

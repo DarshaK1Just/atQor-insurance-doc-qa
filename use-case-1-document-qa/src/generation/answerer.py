@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from src.core.azure_clients import openai_client
 from src.core.config import get_settings
 from src.core.logging import get_logger
+from src.core.model_caps import mark_unsupported, supports_structured_outputs
 from src.generation.schemas import GroundedAnswer
 from src.retrieval.searcher import RetrievedChunk
 
@@ -93,16 +94,20 @@ def generate_answer(question: str, history: list[dict],
     messages = _build_messages(question, history, chunks)
     model = settings.azure_openai_chat_deployment
 
-    # 1. Try Structured Outputs (preferred).
-    try:
-        completion = openai_client().beta.chat.completions.parse(
-            model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
-        )
-        answer = completion.choices[0].message.parsed
-    except Exception as exc:
-        log.info("structured_outputs_unsupported", error=type(exc).__name__,
-                 hint="Falling back to JSON-mode for grounded answer.")
-        answer = None
+    # 1. Try Structured Outputs (preferred) — skipped if the deployment is known
+    #    not to support it (see model_caps), avoiding a wasted round-trip.
+    answer = None
+    if supports_structured_outputs():
+        try:
+            completion = openai_client().beta.chat.completions.parse(
+                model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
+            )
+            answer = completion.choices[0].message.parsed
+        except Exception as exc:
+            mark_unsupported()
+            log.info("structured_outputs_unsupported", error=type(exc).__name__,
+                     hint="Falling back to JSON-mode for grounded answer.")
+            answer = None
 
     # 2. Fallback: JSON-mode + manual parse.
     if answer is None:
@@ -140,28 +145,31 @@ def stream_answer_tokens(question: str, history: list[dict],
 
     # 1. Try Structured-Outputs streaming. Partial parsed objects arrive as the
     #    model emits JSON tokens; we forward `answer_markdown` deltas to the UI.
-    try:
-        with openai_client().beta.chat.completions.stream(
-            model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
-        ) as stream:
-            previous = ""
-            for event in stream:
-                etype = getattr(event, "type", "")
-                # OpenAI Python SDK 1.40+ emits 'content.delta' with .snapshot=GroundedAnswer
-                if etype == "content.delta":
-                    snapshot = getattr(event, "snapshot", None)
-                    if snapshot is None:
-                        continue
-                    current = getattr(snapshot, "answer_markdown", "") or ""
-                    if len(current) > len(previous):
-                        yield "token", current[len(previous):]
-                        previous = current
-            final = stream.get_final_completion().choices[0].message.parsed
-            yield "final", _validate(final, len(chunks))
-            return
-    except Exception as exc:
-        log.info("structured_streaming_unsupported", error=type(exc).__name__,
-                 hint="Falling back to non-streaming JSON-mode answer.")
+    #    Skipped entirely once the deployment is known not to support it.
+    if supports_structured_outputs():
+        try:
+            with openai_client().beta.chat.completions.stream(
+                model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
+            ) as stream:
+                previous = ""
+                for event in stream:
+                    etype = getattr(event, "type", "")
+                    # OpenAI Python SDK 1.40+ emits 'content.delta' with .snapshot=GroundedAnswer
+                    if etype == "content.delta":
+                        snapshot = getattr(event, "snapshot", None)
+                        if snapshot is None:
+                            continue
+                        current = getattr(snapshot, "answer_markdown", "") or ""
+                        if len(current) > len(previous):
+                            yield "token", current[len(previous):]
+                            previous = current
+                final = stream.get_final_completion().choices[0].message.parsed
+                yield "final", _validate(final, len(chunks))
+                return
+        except Exception as exc:
+            mark_unsupported()
+            log.info("structured_streaming_unsupported", error=type(exc).__name__,
+                     hint="Falling back to non-streaming JSON-mode answer.")
 
     # 2. Fallback path (Kimi-k2.6 etc.): TWO-CALL streaming.
     #    a) Stream a plain-text answer (with [n] citation markers) token-by-token.
