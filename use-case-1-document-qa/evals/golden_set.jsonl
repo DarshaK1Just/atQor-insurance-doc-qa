@@ -1,0 +1,12 @@
+{"id": "q01", "type": "single_doc", "question": "What is the maximum coverage for outpatient treatment under the Gold Shield policy?", "expect_contains": "$20,000", "expect_refusal": false}
+{"id": "q02", "type": "single_doc", "question": "What is the annual deductible under the Gold Shield policy?", "expect_contains": "$500", "expect_refusal": false}
+{"id": "q03", "type": "scanned_form", "question": "What is the claim amount and the date of service on the submitted claim form?", "expect_contains": "$12,450", "expect_refusal": false}
+{"id": "q04", "type": "single_doc", "question": "What co-payment percentage does the member pay after meeting the deductible in the Silver Plus policy?", "expect_contains": "20%", "expect_refusal": false}
+{"id": "q05", "type": "followup_chain", "question": "What is the deductible under the Gold Shield policy?", "followup": "Does it also cover pre-existing conditions?", "expect_contains": "12 months", "expect_refusal": false}
+{"id": "q06", "type": "followup_chain", "question": "Tell me about the Silver Plus policy claims procedure.", "followup": "What was the submission window for that same policy again?", "expect_contains": "60 days", "expect_refusal": false}
+{"id": "q07", "type": "comparison", "question": "Compare the deductible clauses across all uploaded policies.", "expect_contains": "$1,500", "expect_refusal": false}
+{"id": "q08", "type": "comparison", "question": "Compare how each policy handles pre-existing conditions.", "expect_contains": "24 months", "expect_refusal": false}
+{"id": "q09", "type": "multi_doc", "question": "What surgery did the patient in the discharge summary undergo, and is outpatient follow-up needed?", "expect_contains": "appendectomy", "expect_refusal": false}
+{"id": "q10", "type": "single_doc", "question": "What is the out-of-pocket maximum under the Gold Shield policy?", "expect_contains": "$6,000", "expect_refusal": false}
+{"id": "q11", "type": "refusal", "question": "What is the weather forecast for Mumbai tomorrow?", "expect_contains": "", "expect_refusal": true}
+{"id": "q12", "type": "refusal", "question": "What is the dental coverage limit under the Platinum Elite policy?", "expect_contains": "", "expect_refusal": true}

@@ -1,0 +1,29 @@
+# Core
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.7
+pydantic-settings>=2.2
+structlog>=24.1
+tenacity>=8.2
+requests>=2.31
+
+# Azure SDKs (no third-party wrappers)
+azure-ai-documentintelligence>=1.0.0
+azure-search-documents>=11.5.1
+azure-storage-blob>=12.19
+azure-identity>=1.16
+openai>=1.40
+
+# Chunking / documents
+tiktoken>=0.7
+pypdf>=4.2
+
+# Frontend (>=1.37 for st.fragment(run_every=...) auto-polling)
+streamlit>=1.37
+
+# Sample document generation (demo) + tests
+reportlab>=4.1
+pillow>=10.3
+python-docx>=1.1
+pytest>=8.2

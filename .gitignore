@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+use-case-1-document-qa/.venv/
+
+# Environment variables
+.env
+*.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data files
+use-case-1-document-qa/data/uploads/*
+use-case-1-document-qa/data/extracts/*
+use-case-1-document-qa/data/status.json
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+.~lock.*
+
+# Azure
+.azure/
+
+# OS specific
+Thumbs.db
