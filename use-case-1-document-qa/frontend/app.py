@@ -353,18 +353,6 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 [data-testid="stChatInput"] textarea:disabled, [data-testid="stChatInputTextArea"]:disabled{
   color:var(--ink-3) !important; -webkit-text-fill-color:var(--ink-3) !important; }
 
-/* New chat button styling - compact violet button */
-[data-testid="stBottom"] .stButton button{ 
-  background:linear-gradient(135deg,var(--violet-2),var(--indigo)) !important;
-  color:#fff !important; border:none !important; border-radius:12px !important;
-  font-weight:600 !important; font-size:.85rem !important;
-  box-shadow:0 4px 12px rgba(91,33,182,.26) !important; transition:all .15s !important;
-  min-height:3rem !important; }
-[data-testid="stBottom"] .stButton button:hover{ 
-  transform:translateY(-1px) !important; 
-  box-shadow:0 8px 20px rgba(91,33,182,.34) !important;
-  color:#fff !important; }
-
 /* ───────────────────────── answer meta + citations ───────────────────────── */
 .cite-label{ font-size:.68rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
   color:var(--ink-3); margin:.7rem 0 .3rem; }
@@ -1012,21 +1000,29 @@ with st.sidebar:
 chat_ready = backend_ok and ready_count > 0
 placeholder = ("Ask about your documents…" if chat_ready
                else "Add and index at least one document to start asking…")
+typed = st.chat_input(placeholder, disabled=not chat_ready)
+if typed:
+    st.session_state.pending_question = typed
 
-# Define has_thread early so we can use it for conditional UI
 pending = st.session_state.pending_question
 has_thread = bool(st.session_state.messages or pending)
 
-# ── NEW CHAT BUTTON (Bottom Left) ─────────────────────────────────────────────
-# Show button when there's an active conversation, positioned at bottom left
-if has_thread:
-    bottom_left = st.container()
-    with bottom_left:
-        col1, col2 = st.columns([0.15, 0.85])
-        with col1:
-            html('<div style="margin-bottom: 0.5rem;"></div>')  # Spacing
-            if st.button("🗨️ New", key="new_chat", use_container_width=True, 
-                        help="Start a new conversation"):
+# ── STABLE LAYOUT ANCHOR ─────────────────────────────────────────────────────
+# header_area is rendered on EVERY run (even empty), so it's always exactly one
+# element. That keeps `overview_slot` (declared right after it) at a FIXED delta
+# position across runs — which is what lets overview_slot.empty() actually clear
+# the suggestion cards. Previously the New-chat bar was conditional, so the slot
+# shifted position between the overview run and the chat run and never cleared,
+# leaving the cards lingering behind the streaming answer (and over the button).
+header_area = st.container()
+with header_area:
+    if has_thread:
+        bar = st.columns([1, 0.22], vertical_alignment="center")
+        with bar[0]:
+            html('<div class="microlabel" style="margin:.1rem 0 0;">Conversation</div>')
+        with bar[1]:
+            if st.button("🗨️ New chat", key="new_chat", use_container_width=True,
+                         help="Start a new conversation"):
                 _old_sid = st.session_state.session_id
                 st.session_state.session_id = uuid.uuid4().hex[:10]
                 st.session_state.messages = []
@@ -1038,26 +1034,6 @@ if has_thread:
                 except Exception:
                     pass
                 st.rerun()
-        with col2:
-            typed = st.chat_input(placeholder, disabled=not chat_ready)
-else:
-    typed = st.chat_input(placeholder, disabled=not chat_ready)
-
-if typed:
-    st.session_state.pending_question = typed
-    # Update pending and has_thread after new input
-    pending = typed
-    has_thread = True
-
-# ── STABLE LAYOUT ANCHOR ─────────────────────────────────────────────────────
-# header_area is rendered on EVERY run (even empty), so it's always exactly one
-# element. That keeps `overview_slot` (declared right after it) at a FIXED delta
-# position across runs — which is what lets overview_slot.empty() actually clear
-# the suggestion cards.
-header_area = st.container()
-with header_area:
-    if has_thread:
-        html('<div class="microlabel" style="margin:.5rem 0 .3rem;">Conversation</div>')
 
 # The overview lives in ONE placeholder at this fixed position. On a conversation
 # turn we EMPTY it first — an immediate clear delta — so the cards are gone before
