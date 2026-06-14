@@ -42,24 +42,60 @@ def _merge(primary: list[RetrievedChunk], extra: list[RetrievedChunk], cap: int)
     return merged[:cap]
 
 
+# Comparison intent is cheap to detect from surface cues; on a first turn there
+# are no pronouns to resolve, so we skip the planner LLM call entirely.
+_COMPARISON_HINTS = (
+    "compare", "comparison", "versus", " vs ", " vs.", "difference between",
+    "differences between", "across all", "across the", "all policies", "all the policies",
+    "each policy", "between the", "side by side", "which policy", "highest", "lowest",
+)
+
+
+def _plan(history: list[dict], question: str) -> QueryPlan:
+    """Resolve the question to a standalone query + intent.
+
+    PERF: with no prior turn there's nothing to coreference, so we skip the
+    planner's LLM round-trip and route intent with keywords. The LLM planner is
+    used only for follow-ups, where pronoun/reference resolution actually matters."""
+    if not history:
+        q = f" {question.lower()} "
+        intent = "comparison" if any(h in q for h in _COMPARISON_HINTS) else "simple"
+        return QueryPlan(standalone_query=question.strip(), intent=intent)
+    return plan_query(history, question)
+
+
 def _retrieve_agentic(plan: QueryPlan):
     """Generator: retrieve → (self-grade → corrective re-query). Yields
     ('stage', payload) trace events, then ('chunks', list) as the final item.
 
-    The grade step is an agentic decision implemented on raw Azure SDK calls.
-    Comparison intent already fans out across every document, so grading is
-    applied only to simple-intent turns. Disabled via AGENTIC_RAG=false."""
+    The 'grading'/'graded' pair is ALWAYS emitted so the UI shows a stable
+    four-step reasoning timeline. PERF: the LLM critic itself runs only on a
+    simple-intent turn whose first-pass retrieval is THIN
+    (< agentic_grade_when_chunks_below). Strong retrievals — the common case —
+    pass an instant local check with no extra round-trip. Disabled via AGENTIC_RAG=false."""
     settings = get_settings()
     chunks = _retrieve(plan.intent, plan.standalone_query)
 
-    if not (settings.agentic_rag and plan.intent == "simple" and settings.agentic_max_retries > 0):
+    # Emit the search summary first so the UI's four steps light up strictly
+    # top-to-bottom (search → verify), then the evidence-check step.
+    yield "retrieved", {
+        "chunk_count": len(chunks),
+        "top_score": max((c.score for c in chunks), default=0.0),
+        "documents": sorted({c.doc_name for c in chunks}),
+    }
+    yield "grading", {"message": "Checking the retrieved passages cover the question…"}
+    weak = plan.intent == "simple" and len(chunks) < settings.agentic_grade_when_chunks_below
+    if not (settings.agentic_rag and settings.agentic_max_retries > 0 and weak):
+        reason = (f"{len(chunks)} passages across the corpus" if plan.intent == "comparison"
+                  else f"strong match · {len(chunks)} passages")
+        yield "graded", {"sufficient": True, "reason": reason}
         yield "chunks", chunks
         return
 
-    yield "grading", {"message": "Assessing whether the retrieved evidence answers the question…"}
+    # Thin retrieval → spend one LLM call to critique + propose a better query.
     grade = grade_retrieval(plan.standalone_query, chunks)
     if grade.sufficient:
-        yield "graded", {"sufficient": True, "reason": grade.reason}
+        yield "graded", {"sufficient": True, "reason": grade.reason or "evidence sufficient"}
         yield "chunks", chunks
         return
 
@@ -79,7 +115,7 @@ def answer_question(session_id: str, question: str, history: list[dict]) -> Chat
     correlation_id = new_correlation_id("chat")
     structlog.contextvars.bind_contextvars(session_id=session_id, correlation_id=correlation_id)
     try:
-        plan = plan_query(history, question)
+        plan = _plan(history, question)
         chunks: list[RetrievedChunk] = []
         for stage, payload in _retrieve_agentic(plan):
             if stage == "chunks":
@@ -113,7 +149,7 @@ def stream_answer(session_id: str, question: str,
     structlog.contextvars.bind_contextvars(session_id=session_id, correlation_id=correlation_id)
     try:
         yield "planning", {"message": "Rewriting your question into a standalone query…"}
-        plan = plan_query(history, question)
+        plan = _plan(history, question)
         yield "planned", {"standalone_query": plan.standalone_query, "intent": plan.intent}
 
         yield "retrieving", {
@@ -123,6 +159,8 @@ def stream_answer(session_id: str, question: str,
         }
         # Retrieve → agentically self-grade → corrective re-query if weak.
         # Non-'chunks' events are the live trace for the grading/refining steps.
+        # The generator now emits 'retrieved' (search summary) itself, before the
+        # grading events, so the trace lights up strictly top-to-bottom.
         chunks: list[RetrievedChunk] = []
         for stage, payload in _retrieve_agentic(plan):
             if stage == "chunks":
@@ -131,11 +169,6 @@ def stream_answer(session_id: str, question: str,
                 yield stage, payload
         log.info("retrieved", count=len(chunks),
                  top_score=max((c.score for c in chunks), default=0.0))
-        yield "retrieved", {
-            "chunk_count": len(chunks),
-            "top_score": max((c.score for c in chunks), default=0.0),
-            "documents": sorted({c.doc_name for c in chunks}),
-        }
 
         yield "generating", {"message": "Grounding the answer in the retrieved sources…"}
         # Token-by-token streaming via OpenAI Structured-Outputs streaming.

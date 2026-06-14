@@ -11,9 +11,9 @@ from azure.core.credentials import AzureKeyCredential
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 
-from src.core.config import get_settings
+from src.core.config import active_provider, get_settings
 
 _AOAI_SCOPE = "https://cognitiveservices.azure.com/.default"
 
@@ -49,6 +49,8 @@ def search_index_client() -> SearchIndexClient:
 
 @lru_cache
 def openai_client() -> AzureOpenAI:
+    """Azure OpenAI client — used for EMBEDDINGS always, and for CHAT when the
+    active provider is Azure."""
     s = get_settings()
     # The OpenAI SDK is httpx-backed; disabling verification means a custom client.
     http_client = None
@@ -56,10 +58,46 @@ def openai_client() -> AzureOpenAI:
         import httpx
         http_client = httpx.Client(verify=False)
     common = {"azure_endpoint": s.azure_openai_endpoint,
-              "api_version": s.azure_openai_api_version}
+              "api_version": s.azure_openai_api_version,
+              # Bound every call so a hung free-tier serverless response can't wedge
+              # an ingestion worker or a chat turn indefinitely.
+              "timeout": s.request_timeout_seconds,
+              "max_retries": 2}
     if http_client is not None:
         common["http_client"] = http_client
     if s.azure_openai_api_key:
         return AzureOpenAI(api_key=s.azure_openai_api_key, **common)
     token_provider = get_bearer_token_provider(DefaultAzureCredential(), _AOAI_SCOPE)
     return AzureOpenAI(azure_ad_token_provider=token_provider, **common)
+
+
+@lru_cache
+def _gemini_client() -> OpenAI:
+    """Google Gemini via its OpenAI-compatible endpoint, so the whole codebase can
+    keep using the OpenAI SDK (chat, JSON mode, streaming) unchanged."""
+    s = get_settings()
+    kwargs = {"api_key": s.gemini_api_key, "base_url": s.gemini_base_url,
+              "timeout": s.request_timeout_seconds, "max_retries": 2}
+    if not s.verify_ssl:
+        import httpx
+        kwargs["http_client"] = httpx.Client(verify=False)
+    return OpenAI(**kwargs)
+
+
+def chat_client():
+    """The client for CHAT/completions, chosen by `active_provider()`. Returns an
+    OpenAI-compatible client either way, so call sites are provider-agnostic."""
+    return _gemini_client() if active_provider() == "gemini" else openai_client()
+
+
+def chat_model() -> str:
+    """The chat model/deployment name for the active provider."""
+    s = get_settings()
+    return s.gemini_chat_model if active_provider() == "gemini" else s.azure_openai_chat_deployment
+
+
+def chat_extra_kwargs() -> dict:
+    """Provider-specific kwargs merged into every chat call. For Gemini we disable
+    'thinking' (reasoning_effort=none) so short answers aren't consumed by reasoning
+    tokens and latency stays low; Azure gets nothing extra."""
+    return {"reasoning_effort": "none"} if active_provider() == "gemini" else {}

@@ -60,15 +60,18 @@ STAGE_LABEL = {
     "failed": "Failed",
 }
 # (material icon, category, question) — icons render via Streamlit's :material/: syntax.
+# Each maps to a real capability on the demo corpus: limit lookup, key-value
+# extraction from a scanned claim form, clinical summarisation, and a multi-policy
+# comparison fan-out — so the suggestions demonstrate genuine, gradeable value.
 SUGGESTED_QUESTIONS = [
-    (":material/verified_user:", "Coverage lookup",
-     "What is the maximum coverage for outpatient treatment under the Gold Shield policy?"),
-    (":material/receipt_long:", "Claim-form facts",
-     "What is the claim amount and the date of service on the uploaded claim form?"),
-    (":material/forum:", "Follow-up reasoning",
-     "What is the Gold Shield deductible?"),
-    (":material/compare_arrows:", "Cross-document comparison",
-     "Compare the deductible clauses across all uploaded policies."),
+    (":material/verified_user:", "Coverage & limits",
+     "What is the annual outpatient limit, deductible and co-payment under the Gold Shield policy?"),
+    (":material/receipt_long:", "Extract claim-form fields",
+     "From the CF-102 claim form, list the claimant name, policy number, claimed amount and date of service."),
+    (":material/clinical_notes:", "Summarise medical report",
+     "Summarise the discharge diagnosis, procedure performed and length of stay in the medical report."),
+    (":material/compare_arrows:", "Compare policies",
+     "Compare the deductibles and annual limits across the Gold Shield, Silver Plus and Platinum Elite policies."),
 ]
 
 # Inline shield mark — crisper than an emoji inside the brand square.
@@ -109,8 +112,14 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 [data-testid="stHeader"]{ background:transparent; height:0; }
 #MainMenu, footer { visibility:hidden; height:0; }
 .block-container{ padding-top:1.1rem !important; padding-bottom:7rem !important; max-width:1180px; }
-[data-testid="stToolbar"]{ right:1rem; }
 [data-testid="stVerticalBlock"]{ gap:.7rem; }
+
+/* Never show the "Running…" status widget (the flash of fetch_health() etc.),
+   and never dim/blur the page while a rerun is in flight. */
+[data-testid="stStatusWidget"], [data-testid="stToolbar"]{ display:none !important; }
+[data-stale="true"], [data-stale="true"] *{ opacity:1 !important; }
+[data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] *{ transition:none !important; }
+[data-testid="stSkeleton"]{ display:none !important; }
 
 /* shared micro-label (uppercase eyebrow) */
 .microlabel{ font-size:.7rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
@@ -119,15 +128,19 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 .section-sub{ color:var(--ink-2); font-size:.86rem; margin:-.2rem 0 .7rem; line-height:1.45; }
 
 /* ───────────────────────── sidebar (app shell) ───────────────────────── */
-[data-testid="stSidebar"]{ background:#fff; border-right:1px solid var(--line-2); }
-[data-testid="stSidebar"] .block-container{ padding-top:1.1rem; }
+/* Wider rail so the brand title fits cleanly and never collides with the upload. */
+[data-testid="stSidebar"]{ background:#fff; border-right:1px solid var(--line-2);
+  width:340px !important; min-width:340px !important; }
+[data-testid="stSidebar"] .block-container{ padding-top:1.2rem; padding-left:1.1rem; padding-right:1.1rem; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap:.55rem; }
-.brand{ display:flex; align-items:center; gap:.65rem; padding:.1rem .1rem .35rem; }
-.brand-logo{ width:42px; height:42px; border-radius:12px; flex:0 0 42px; display:grid; place-items:center;
+/* brand is its own header band, separated from the controls below it */
+.brand{ display:flex; align-items:center; gap:.7rem; padding:.1rem .1rem 1rem; margin-bottom:.6rem;
+  border-bottom:1px solid var(--line); }
+.brand-logo{ width:44px; height:44px; border-radius:13px; flex:0 0 44px; display:grid; place-items:center;
   background:linear-gradient(135deg,var(--violet-2),var(--indigo));
   box-shadow:0 6px 16px rgba(109,40,217,.35), inset 0 1px 0 rgba(255,255,255,.3); }
-.brand-name{ font-weight:800; font-size:1.06rem; color:var(--ink); line-height:1.05; letter-spacing:-.01em; }
-.brand-sub{ font-size:.66rem; color:var(--ink-3); letter-spacing:.14em; margin-top:.22rem; text-transform:uppercase; font-weight:700; }
+.brand-name{ font-weight:800; font-size:1.02rem; color:var(--ink); line-height:1.15; letter-spacing:-.01em; }
+.brand-sub{ font-size:.64rem; color:var(--ink-3); letter-spacing:.14em; margin-top:.3rem; text-transform:uppercase; font-weight:700; }
 
 /* upload zone */
 [data-testid="stFileUploaderDropzone"]{
@@ -315,7 +328,7 @@ def _post(path: str, **kw) -> requests.Response:
     return requests.post(f"{API}{path}", timeout=kw.pop("timeout", 180), **kw)
 
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=30)
 def fetch_health() -> dict | None:
     try:
         r = _get("/health", timeout=3)
@@ -470,7 +483,16 @@ def load_demo_corpus() -> bool:
     if not files:
         st.error("No sample documents found.")
         return False
-    payload = [("files", (f.name, f.read_bytes())) for f in files]
+    # Content-based de-dupe: skip samples already in the corpus (ready or still
+    # processing) so a second click — even after a page refresh — never creates
+    # duplicates. Only genuinely-missing or previously-failed samples reload.
+    existing = fetch_documents() or []
+    present = {d["doc_name"] for d in existing if d.get("status") != "failed"}
+    pending = [f for f in files if f.name not in present]
+    if not pending:
+        st.toast("Demo corpus is already loaded.", icon="📚")
+        return False
+    payload = [("files", (f.name, f.read_bytes())) for f in pending]
     try:
         r = _post("/documents", files=payload, timeout=90)
         if r.status_code == 202:
@@ -504,21 +526,22 @@ def citation_dialog(c: dict) -> None:
 
 
 # ════════════════════════════════════════════════════════════ chat rendering
+# A fixed four-step reasoning timeline. All four render from the first frame
+# (pending → active → done) so the step count never changes mid-turn, and each
+# row carries a live note (rewritten query, passages found, evidence verdict).
 TRACE_STAGES = [
-    ("planning",   "Understanding your question"),
-    ("retrieving", "Searching the document index"),
-    ("grading",    "Checking the evidence is sufficient"),
-    ("generating", "Grounding the answer in sources"),
+    ("planning",   "Understanding the question"),
+    ("retrieving", "Searching your documents"),
+    ("grading",    "Verifying the evidence"),
+    ("generating", "Composing a grounded answer"),
 ]
 
 
 def render_trace_html(state: dict[str, str]) -> str:
     rows = []
     for key, label in TRACE_STAGES:
-        if key == "grading" and "grading" not in state:
-            continue
         s = state.get(key, "pending")
-        ic, cls = ("✅", "done") if s == "done" else (("⏳", "active") if s == "active" else ("•", ""))
+        ic, cls = ("✓", "done") if s == "done" else (("◐", "active") if s == "active" else ("○", ""))
         note = escape(state.get(f"{key}_note", ""))
         note_html = f'<span class="note-r">{note}</span>' if note else ""
         rows.append(f'<div class="row {cls}"><span class="ic">{ic}</span><span>{label}</span>{note_html}</div>')
@@ -762,10 +785,9 @@ with st.sidebar:
         st.rerun()
     if st.button("Load demo corpus", icon=":material/library_books:",
                  use_container_width=True, key="demo_side"):
-        if st.session_state.get("demo_loaded") and docs_now:
-            st.toast("Demo corpus is already loaded.", icon="📚")
-        elif load_demo_corpus():
-            st.session_state["demo_loaded"] = True
+        # De-dupe is now content-based inside load_demo_corpus(): it skips samples
+        # already present and toasts "already loaded" when there's nothing new.
+        if load_demo_corpus():
             st.session_state["_corpus_polling"] = True
             st.rerun()
 
@@ -784,12 +806,13 @@ with st.sidebar:
         services = health.get("services", {})
         n_ok = sum(1 for v in services.values() if v)
         n_all = len(services) or 1
-        azure_dot = "dot-on" if n_ok == n_all else ("dot-warn" if n_ok else "dot-off")
+        svc_dot = "dot-on" if n_ok == n_all else ("dot-warn" if n_ok else "dot-off")
+        provider = escape((health.get("provider") or "").title()) or "LLM"
         model = escape(health.get("chat_model", "")) or "—"
         html(f'<div class="status-card">'
              f'<div class="microlabel" style="margin:0 0 .45rem;">System status</div>'
-             f'<div class="status-row"><span class="dot {azure_dot}"></span>Azure services <b>{n_ok}/{n_all}</b></div>'
-             f'<div class="status-row"><span class="dot dot-on"></span>Model <b>{model}</b></div>'
+             f'<div class="status-row"><span class="dot dot-on"></span>{provider} <b>{model}</b></div>'
+             f'<div class="status-row"><span class="dot {svc_dot}"></span>Azure services <b>{n_ok}/{n_all}</b></div>'
              f'<div class="status-row mono" style="color:#9A96AE;">session {st.session_state.session_id}</div>'
              f'</div>')
     html('<p class="tech-foot">Azure AI Search · Document Intelligence · hybrid retrieval · '
@@ -799,13 +822,13 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════ main (conversation)
 has_thread = bool(st.session_state.messages or st.session_state.pending_question)
 
-# Slim header row — title left, New chat right (only once a conversation exists).
-hcol = st.columns([1, 0.26], vertical_alignment="center")
-with hcol[0]:
-    html('<div class="section-title" style="margin:0;">Ask your documents</div>'
-         '<div class="section-sub" style="margin:.1rem 0 0;">Grounded, page-cited answers from your corpus.</div>')
-with hcol[1]:
-    if st.session_state.messages:
+# No redundant standing header — the hero carries the messaging on the empty
+# state. Once a conversation exists, show only a slim bar with a New-chat action.
+if st.session_state.messages:
+    bar = st.columns([1, 0.22], vertical_alignment="center")
+    with bar[0]:
+        html('<div class="microlabel" style="margin:.1rem 0 0;">Conversation</div>')
+    with bar[1]:
         if st.button("New chat", icon=":material/add_comment:",
                      use_container_width=True, key="new_chat"):
             try:
@@ -816,8 +839,6 @@ with hcol[1]:
             st.session_state.messages = []
             st.session_state.active_citation = None
             st.rerun()
-
-st.write("")  # small breathing room under the header
 
 # State-aware body: offline → cold start → indexing → ready/suggestions → chat.
 if not backend_ok:

@@ -13,8 +13,7 @@ import json
 
 from pydantic import BaseModel, Field, ValidationError
 
-from src.core.azure_clients import openai_client
-from src.core.config import get_settings
+from src.core.azure_clients import chat_client, chat_extra_kwargs, chat_model
 from src.core.logging import get_logger
 from src.core.model_caps import mark_unsupported, supports_structured_outputs
 from src.retrieval.searcher import RetrievedChunk
@@ -64,13 +63,13 @@ def _messages(query: str, chunks: list[RetrievedChunk]) -> list[dict]:
 def grade_retrieval(query: str, chunks: list[RetrievedChunk]) -> RetrievalGrade:
     """Judge retrieval sufficiency and propose a refined query. Never raises —
     on any error it returns `sufficient=True` so generation proceeds unblocked."""
-    model = get_settings().azure_openai_chat_deployment
+    model = chat_model()
     messages = _messages(query, chunks)
     grade: RetrievalGrade | None = None
 
     if supports_structured_outputs():
         try:
-            completion = openai_client().beta.chat.completions.parse(
+            completion = chat_client().beta.chat.completions.parse(
                 model=model, temperature=0, messages=messages, response_format=RetrievalGrade,
             )
             grade = completion.choices[0].message.parsed
@@ -80,9 +79,9 @@ def grade_retrieval(query: str, chunks: list[RetrievedChunk]) -> RetrievalGrade:
 
     if grade is None:
         try:
-            completion = openai_client().chat.completions.create(
+            completion = chat_client().chat.completions.create(
                 model=model, temperature=0, messages=messages,
-                response_format={"type": "json_object"},
+                response_format={"type": "json_object"}, **chat_extra_kwargs(),
             )
             grade = RetrievalGrade.model_validate(json.loads(completion.choices[0].message.content or "{}"))
         except (json.JSONDecodeError, ValidationError, Exception) as exc:

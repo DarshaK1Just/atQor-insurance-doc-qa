@@ -20,7 +20,8 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from src.core.config import get_settings
+from src.core.azure_clients import chat_client, chat_extra_kwargs, chat_model
+from src.core.config import active_provider, get_settings
 from src.core.logging import configure_logging, get_logger
 from src.generation.rag_service import answer_question, stream_answer
 from src.generation.schemas import ChatRequest, ChatResponse
@@ -68,19 +69,18 @@ def _warmup() -> None:
     """Best-effort: fire one tiny embed + chat call so the FIRST real query
     doesn't pay the serverless cold-start (free Foundry models scale to zero).
     Runs in a daemon thread; every failure is logged and ignored."""
-    settings = get_settings()
     try:
         from src.indexing.embedder import embed_query
         embed_query("warmup")
     except Exception as exc:
         log.info("warmup_embed_skipped", error=type(exc).__name__)
     try:
-        from src.core.azure_clients import openai_client
-        openai_client().chat.completions.create(
-            model=settings.azure_openai_chat_deployment,
+        chat_client().chat.completions.create(
+            model=chat_model(),
             messages=[{"role": "user", "content": "ping"}], max_tokens=1, temperature=0,
+            **chat_extra_kwargs(),
         )
-        log.info("warmup_complete")
+        log.info("warmup_complete", provider=active_provider(), model=chat_model())
     except Exception as exc:
         log.info("warmup_chat_skipped", error=type(exc).__name__)
 
@@ -90,6 +90,15 @@ def _boot_tasks() -> None:
     port instantly. Previously these ran inline in the startup event; if Azure
     was slow/unreachable the index check's retries delayed 'startup complete' by
     up to a minute. Now boot is immediate and these self-heal in the background."""
+    # Reconcile orphans first: any doc still 'processing' at boot has no worker
+    # (its thread died with the previous process), so clean/fail it immediately —
+    # this is what stops documents blinking "processing" forever after a restart.
+    try:
+        reaped = status_store.reap_stale(0)
+        if reaped:
+            log.info("startup_reconciled_orphans", count=reaped)
+    except Exception as exc:
+        log.warning("startup_reconcile_failed", error=str(exc))
     try:
         ensure_index()
         log.info("startup_index_ready", index=get_settings().search_index_name)
@@ -113,15 +122,18 @@ def health() -> dict:
     Real readiness is implicit: failing dependencies surface as 5xx on the actual
     routes that need them, with structured logs for triage."""
     settings = get_settings()
+    provider = active_provider()
+    llm_ok = bool(settings.gemini_api_key) if provider == "gemini" else bool(settings.azure_openai_endpoint)
     return {
         "status": "ok",
+        "provider": provider,
         "services": {
-            "openai": bool(settings.azure_openai_endpoint),
+            "llm": llm_ok,
             "docintel": bool(settings.docintel_endpoint),
             "search": bool(settings.search_endpoint),
             "blob": bool(settings.blob_connection_string),
         },
-        "chat_model": settings.azure_openai_chat_deployment,
+        "chat_model": chat_model(),
         "embed_model": settings.azure_openai_embed_deployment,
     }
 
@@ -158,6 +170,10 @@ def upload_documents(files: list[UploadFile]) -> list[dict]:
 
 @app.get("/documents")
 def list_documents() -> list[dict]:
+    # Opportunistically reap documents that have hung mid-processing so a genuinely
+    # stuck Azure call can't leave a card spinning forever. Healthy docs bump
+    # updated_ts at every stage, so they're never within the stale window.
+    status_store.reap_stale(get_settings().stale_doc_seconds)
     return status_store.list_all()
 
 

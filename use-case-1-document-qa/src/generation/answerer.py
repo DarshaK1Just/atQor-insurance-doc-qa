@@ -18,34 +18,46 @@ Two model strategies, auto-selected:
   WITH partial-object streaming so `answer_markdown` deltas arrive token-by-token.
 - Other deployments (e.g. Kimi-k2.6) → JSON-mode + manual parse on completion."""
 import json
+import re
 from collections.abc import Iterator
 
 from pydantic import ValidationError
 
-from src.core.azure_clients import openai_client
+from src.core.azure_clients import chat_client, chat_extra_kwargs, chat_model
 from src.core.config import get_settings
 from src.core.logging import get_logger
 from src.core.model_caps import mark_unsupported, supports_structured_outputs
-from src.generation.schemas import GroundedAnswer
+from src.generation.schemas import Citation, GroundedAnswer
 from src.retrieval.searcher import RetrievedChunk
 
 log = get_logger("answerer")
 
-_SYSTEM = """You are an insurance document assistant for internal operations staff.
-Answer the user's question using ONLY the numbered sources below. Rules:
-- Every factual statement MUST carry the id of its source in square brackets, e.g. [1] or [2][3]. Never combine ids like [1,3].
-- Quote exact figures (amounts, percentages, dates, clause numbers) verbatim from the sources.
-- If the sources do not contain enough information to answer, set insufficient_context=true and say so plainly in answer_markdown. Do NOT use outside knowledge. Do NOT guess.
-- For comparison questions, answer with a markdown table comparing each document, citing per cell.
-- In the citations array, include one entry per source you actually used, with a short verbatim quote and the page number shown in that source's header.
+# Shared answer-quality contract — a direct answer first, then full structured
+# detail, tables where they help, every fact cited. Used verbatim by both the
+# structured-output prompt and the plain-streaming prompt so answers are
+# consistently thorough regardless of which model path serves the turn.
+_ANSWER_RULES = """How to answer well:
+- Open with a direct, one-sentence answer to exactly what was asked, with the key figure(s) in **bold**.
+- Then give the full supporting detail: the relevant amounts, percentages, limits, deductibles, co-pays, waiting periods, conditions, exceptions and exclusions that bear on the question.
+- Use a Markdown table whenever the answer has several structured values (limits / co-pay / waiting periods) or compares documents — one row per item, with the citation in the relevant cell.
+- Use short bullet lists for conditions, exclusions or steps.
+- Quote figures verbatim (amounts, %, dates, clause numbers). Put the source id in square brackets after every fact, e.g. [1] or [2][3]. Never write [1,3].
+- Be thorough but tight — no filler, no repetition, do not restate the question.
+- If the sources genuinely lack the answer, say so plainly and name the document that would be needed. Never use outside knowledge; never guess."""
+
+_SYSTEM = f"""You are a senior insurance analyst assisting operations staff. Answer the user's question using ONLY the numbered sources below.
+
+{_ANSWER_RULES}
+
+For the structured fields: set insufficient_context=true only when the sources cannot answer; include one citation per source you actually used (short verbatim quote + the page number shown in that source's header).
 
 Reply with ONLY a JSON object matching this schema:
-{
+{{
   "answer_markdown": "...",
-  "citations": [{"source_id": int, "doc_name": str, "page": int, "quote": str}],
+  "citations": [{{"source_id": int, "doc_name": str, "page": int, "quote": str}}],
   "insufficient_context": bool,
   "confidence": "high" | "medium" | "low"
-}
+}}
 """
 
 _REFUSAL = GroundedAnswer(
@@ -92,14 +104,14 @@ def generate_answer(question: str, history: list[dict],
         return _REFUSAL.model_copy()
 
     messages = _build_messages(question, history, chunks)
-    model = settings.azure_openai_chat_deployment
+    model = chat_model()
 
     # 1. Try Structured Outputs (preferred) — skipped if the deployment is known
     #    not to support it (see model_caps), avoiding a wasted round-trip.
     answer = None
     if supports_structured_outputs():
         try:
-            completion = openai_client().beta.chat.completions.parse(
+            completion = chat_client().beta.chat.completions.parse(
                 model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
             )
             answer = completion.choices[0].message.parsed
@@ -112,9 +124,9 @@ def generate_answer(question: str, history: list[dict],
     # 2. Fallback: JSON-mode + manual parse.
     if answer is None:
         try:
-            completion = openai_client().chat.completions.create(
+            completion = chat_client().chat.completions.create(
                 model=model, temperature=0.1, messages=messages,
-                response_format={"type": "json_object"},
+                response_format={"type": "json_object"}, **chat_extra_kwargs(),
             )
             raw = completion.choices[0].message.content or "{}"
             answer = GroundedAnswer.model_validate(json.loads(raw))
@@ -141,14 +153,14 @@ def stream_answer_tokens(question: str, history: list[dict],
         return
 
     messages = _build_messages(question, history, chunks)
-    model = settings.azure_openai_chat_deployment
+    model = chat_model()
 
     # 1. Try Structured-Outputs streaming. Partial parsed objects arrive as the
     #    model emits JSON tokens; we forward `answer_markdown` deltas to the UI.
     #    Skipped entirely once the deployment is known not to support it.
     if supports_structured_outputs():
         try:
-            with openai_client().beta.chat.completions.stream(
+            with chat_client().beta.chat.completions.stream(
                 model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
             ) as stream:
                 previous = ""
@@ -179,33 +191,58 @@ def stream_answer_tokens(question: str, history: list[dict],
     yield from _stream_with_extract_fallback(question, history, chunks)
 
 
-_PLAIN_SYSTEM = """You are an insurance document assistant for internal operations staff.
-Answer the user's question using ONLY the numbered sources below. Rules:
-- Every factual statement MUST carry the id of its source in square brackets, e.g. [1] or [2][3].
-- Quote exact figures (amounts, percentages, dates, clause numbers) verbatim from the sources.
-- If the sources do not contain enough information to answer, say so plainly — DO NOT guess.
-- For comparison questions, answer with a markdown table comparing each document, citing per cell.
-- Write naturally as prose/markdown — do NOT output JSON.
+_PLAIN_SYSTEM = f"""You are a senior insurance analyst assisting operations staff. Answer the user's question using ONLY the numbered SOURCES provided.
+
+{_ANSWER_RULES}
+
+Write clean Markdown prose and tables — do NOT output JSON.
 """
 
-_EXTRACT_SYSTEM = """You convert a grounded answer + its sources into a JSON object with this shape:
-{
-  "citations": [{"source_id": int, "doc_name": str, "page": int, "quote": str}],
-  "insufficient_context": bool,
-  "confidence": "high" | "medium" | "low"
-}
-- One citation per [n] marker actually used in the answer.
-- 'quote' = a short verbatim snippet from that source supporting the answer (under 200 chars).
-- 'page' = the page number printed in that source's header.
-- 'insufficient_context' = true if the answer says it cannot answer.
-Reply with ONLY the JSON object.
-"""
+# Citation markers like [1], [2][3]. We map these to the retrieved chunks in
+# Python — no second LLM call — so pages and quotes are accurate by construction.
+_MARKER_RE = re.compile(r"\[(\d+)\]")
+_INSUFFICIENT_HINTS = (
+    "don't have enough", "do not have enough", "not contain", "cannot answer",
+    "can't answer", "no information", "insufficient", "unable to answer",
+    "not enough information", "isn't enough", "is not enough",
+)
+
+
+def _snippet(text: str, limit: int = 240) -> str:
+    """A short verbatim lead snippet from a chunk, trimmed on a sentence boundary."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    dot = cut.rfind(". ")
+    return (cut[: dot + 1] if dot > 80 else cut).rstrip() + "…"
+
+
+def _citations_from_markers(answer_text: str, chunks: list[RetrievedChunk]) -> list[Citation]:
+    """Build one citation per distinct [n] marker the model actually used, in
+    order of first appearance. Page + quote come from the chunk metadata."""
+    out: list[Citation] = []
+    seen: set[int] = set()
+    for m in _MARKER_RE.finditer(answer_text):
+        n = int(m.group(1))
+        if n in seen or not (1 <= n <= len(chunks)):
+            continue
+        seen.add(n)
+        c = chunks[n - 1]
+        out.append(Citation(source_id=n, doc_name=c.doc_name,
+                            page=c.page_start, quote=_snippet(c.content)))
+    return out
+
+
+def _confidence(n_cited: int, insufficient: bool) -> str:
+    if insufficient:
+        return "low"
+    return "high" if n_cited >= 2 else ("medium" if n_cited == 1 else "low")
 
 
 def _stream_with_extract_fallback(question: str, history: list[dict],
                                   chunks: list[RetrievedChunk]) -> Iterator[tuple[str, object]]:
-    settings = get_settings()
-    model = settings.azure_openai_chat_deployment
+    model = chat_model()
 
     messages = [{"role": "system", "content": _PLAIN_SYSTEM}]
     for turn in history[-6:]:
@@ -215,11 +252,11 @@ def _stream_with_extract_fallback(question: str, history: list[dict],
         "content": f"SOURCES:\n\n{_format_sources(chunks)}\n\nQUESTION: {question}",
     })
 
-    # Pass 1: stream plain markdown answer
+    # Pass 1: stream the plain markdown answer token-by-token.
     answer_text = ""
     try:
-        stream = openai_client().chat.completions.create(
-            model=model, temperature=0.1, messages=messages, stream=True,
+        stream = chat_client().chat.completions.create(
+            model=model, temperature=0.1, messages=messages, stream=True, **chat_extra_kwargs(),
         )
         for chunk_evt in stream:
             if not chunk_evt.choices:
@@ -236,30 +273,16 @@ def _stream_with_extract_fallback(question: str, history: list[dict],
         yield "final", answer
         return
 
-    # Pass 2: tiny structured extract (citations, insufficient_context, confidence)
-    sources_block = _format_sources(chunks)
-    try:
-        extract_resp = openai_client().chat.completions.create(
-            model=model, temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _EXTRACT_SYSTEM},
-                {"role": "user", "content": f"ANSWER:\n{answer_text}\n\nSOURCES:\n{sources_block}"},
-            ],
-        )
-        raw = extract_resp.choices[0].message.content or "{}"
-        extracted = json.loads(raw)
-        answer = GroundedAnswer(
-            answer_markdown=answer_text,
-            citations=extracted.get("citations") or [],
-            insufficient_context=bool(extracted.get("insufficient_context", False)),
-            confidence=extracted.get("confidence") or "medium",
-        )
-    except Exception as exc:
-        log.warning("citation_extract_failed", error=str(exc))
-        answer = GroundedAnswer(
-            answer_markdown=answer_text, citations=[],
-            insufficient_context=False, confidence="medium",
-        )
-
+    # Pass 2 is now PURE PYTHON — map [n] markers to the retrieved chunks. This
+    # removes the second LLM round-trip that doubled answer latency, and yields
+    # more accurate citations (real pages/quotes, not model-guessed ones).
+    insufficient = (not answer_text.strip()) or any(
+        h in answer_text.lower() for h in _INSUFFICIENT_HINTS)
+    citations = [] if insufficient else _citations_from_markers(answer_text, chunks)
+    answer = GroundedAnswer(
+        answer_markdown=answer_text or _REFUSAL.answer_markdown,
+        citations=citations,
+        insufficient_context=insufficient,
+        confidence=_confidence(len(citations), insufficient),
+    )
     yield "final", _validate(answer, len(chunks))

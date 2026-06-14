@@ -8,7 +8,7 @@ from pathlib import Path
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.core.azure_clients import openai_client
+from src.core.azure_clients import chat_client, chat_extra_kwargs, chat_model
 from src.core.config import get_settings
 from src.core.logging import get_logger, new_correlation_id
 from src.indexing.chunker import chunk_markdown
@@ -29,7 +29,6 @@ def _llm_classify(content: str) -> str:
     """JSON-mode classification. Same prompt for any deployment; the response_format
     forces the model to emit {"label": "..."} which we parse robustly."""
     import json as _json
-    settings = get_settings()
     system = (
         "You classify the PRIMARY PURPOSE of an insurance-related document. "
         "Pick exactly ONE label from this set: " + ", ".join(_DOC_TYPES) + ".\n\n"
@@ -50,8 +49,8 @@ def _llm_classify(content: str) -> str:
         "4. Otherwise → 'other'.\n\n"
         "Reply with ONLY a JSON object of the form: {\"label\": \"medical_report\"}."
     )
-    response = openai_client().chat.completions.create(
-        model=settings.azure_openai_chat_deployment,
+    response = chat_client().chat.completions.create(
+        model=chat_model(),
         temperature=0,
         max_tokens=60,
         response_format={"type": "json_object"},
@@ -59,6 +58,7 @@ def _llm_classify(content: str) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": content[:2500]},
         ],
+        **chat_extra_kwargs(),
     )
     raw = (response.choices[0].message.content or "{}").strip()
     try:

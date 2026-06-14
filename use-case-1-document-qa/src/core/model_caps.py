@@ -16,7 +16,7 @@ We probe once and cache the answer process-wide. Behaviour is controlled by the
 """
 import threading
 
-from src.core.config import get_settings
+from src.core.config import active_provider, get_settings
 from src.core.logging import get_logger
 
 log = get_logger("model_caps")
@@ -42,6 +42,10 @@ def supports_structured_outputs() -> bool:
     if mode == "on":
         return True
     if mode == "off":
+        return False
+    # Gemini's OpenAI-compatible endpoint is served well by JSON mode; skip the
+    # schema-parse attempt entirely (avoids a wasted round-trip) unless forced on.
+    if active_provider() == "gemini":
         return False
     return _auto_supported is not False  # unknown or known-good → attempt
 

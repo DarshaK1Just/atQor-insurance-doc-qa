@@ -14,8 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from src.core.azure_clients import openai_client
-from src.core.config import get_settings
+from src.core.azure_clients import chat_client, chat_extra_kwargs, chat_model
 from src.core.logging import get_logger
 from src.core.model_caps import mark_unsupported, supports_structured_outputs
 
@@ -52,7 +51,7 @@ def _try_structured(messages: list[dict], model: str) -> QueryPlan | None:
     if not supports_structured_outputs():
         return None
     try:
-        completion = openai_client().beta.chat.completions.parse(
+        completion = chat_client().beta.chat.completions.parse(
             model=model, temperature=0, messages=messages, response_format=QueryPlan,
         )
         return completion.choices[0].message.parsed
@@ -66,9 +65,9 @@ def _try_structured(messages: list[dict], model: str) -> QueryPlan | None:
 def _json_mode(messages: list[dict], model: str) -> QueryPlan | None:
     """Fallback for models without Structured Outputs (e.g. Kimi-k2.6)."""
     try:
-        completion = openai_client().chat.completions.create(
+        completion = chat_client().chat.completions.create(
             model=model, temperature=0, messages=messages,
-            response_format={"type": "json_object"},
+            response_format={"type": "json_object"}, **chat_extra_kwargs(),
         )
         raw = completion.choices[0].message.content or "{}"
         return QueryPlan.model_validate(json.loads(raw))
@@ -78,9 +77,8 @@ def _json_mode(messages: list[dict], model: str) -> QueryPlan | None:
 
 
 def plan_query(history: list[dict], question: str) -> QueryPlan:
-    settings = get_settings()
     messages = _build_messages(history, question)
-    model = settings.azure_openai_chat_deployment
+    model = chat_model()
 
     plan = _try_structured(messages, model) or _json_mode(messages, model)
     if plan is None:  # both paths failed — degrade gracefully to raw question
