@@ -1013,6 +1013,10 @@ chat_ready = backend_ok and ready_count > 0
 placeholder = ("Ask about your documents…" if chat_ready
                else "Add and index at least one document to start asking…")
 
+# Define has_thread early so we can use it for conditional UI
+pending = st.session_state.pending_question
+has_thread = bool(st.session_state.messages or pending)
+
 # ── NEW CHAT BUTTON (Bottom Left) ─────────────────────────────────────────────
 # Show button when there's an active conversation, positioned at bottom left
 if has_thread:
@@ -1041,9 +1045,9 @@ else:
 
 if typed:
     st.session_state.pending_question = typed
-
-pending = st.session_state.pending_question
-has_thread = bool(st.session_state.messages or pending)
+    # Update pending and has_thread after new input
+    pending = typed
+    has_thread = True
 
 # ── STABLE LAYOUT ANCHOR ─────────────────────────────────────────────────────
 # header_area is rendered on EVERY run (even empty), so it's always exactly one
