@@ -43,20 +43,34 @@ except Exception:
 def _start_backend() -> str:
     """Spin up uvicorn in a daemon thread and return the base URL."""
     import uvicorn
+    import socket
+
+    def _find_free_port() -> int:
+        """Find an available port."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+        return port
+
+    port = _find_free_port()
 
     def _serve() -> None:
-        uvicorn.run(
-            "src.api.main:app",
-            host="127.0.0.1",
-            port=8001,
-            log_level="error",
-            access_log=False,
-        )
+        try:
+            uvicorn.run(
+                "src.api.main:app",
+                host="127.0.0.1",
+                port=port,
+                log_level="info",
+                access_log=True,
+            )
+        except Exception as e:
+            st.error(f"Backend startup failed: {e}")
 
     threading.Thread(target=_serve, name="fastapi-backend", daemon=True).start()
-    # Give uvicorn time to bind the port before the first HTTP call from the UI.
-    time.sleep(4)
-    return "http://127.0.0.1:8001"
+    # Give uvicorn more time to bind the port on cloud environments
+    time.sleep(8)
+    return f"http://127.0.0.1:{port}"
 
 
 _api_url = _start_backend()
