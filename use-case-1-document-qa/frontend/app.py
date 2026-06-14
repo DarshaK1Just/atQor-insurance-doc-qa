@@ -66,14 +66,14 @@ STAGE_LABEL = {
 # extraction from a scanned claim form, clinical summarisation, and a multi-policy
 # comparison fan-out — so the suggestions demonstrate genuine, gradeable value.
 SUGGESTED_QUESTIONS = [
-    (":material/verified_user:", "Coverage & limits",
-     "What is the annual outpatient limit, deductible and co-payment under the Gold Shield policy?"),
-    (":material/receipt_long:", "Extract claim-form fields",
-     "From the CF-102 claim form, list the claimant name, policy number, claimed amount and date of service."),
-    (":material/clinical_notes:", "Summarise medical report",
-     "Summarise the discharge diagnosis, procedure performed and length of stay in the medical report."),
-    (":material/compare_arrows:", "Compare policies",
-     "Compare the deductibles and annual limits across the Gold Shield, Silver Plus and Platinum Elite policies."),
+    (":material/fact_check:", "Claim eligibility check",
+     "Jane Q. Member has submitted an appendicitis claim (ICD-10 K35.80) for $9,560 under the Gold Shield policy. Is the claim likely eligible? Check the relevant waiting periods and exclusions, then calculate the approximate member out-of-pocket after deductible and co-insurance."),
+    (":material/summarize:", "Full clinical extraction",
+     "Extract a complete structured summary from the medical report: patient name and MRN, admission and discharge dates, length of stay, primary and secondary diagnoses with ICD codes, procedures performed, attending physician, discharge condition, prescribed medications, and follow-up instructions."),
+    (":material/calculate:", "Out-of-pocket estimate",
+     "Under the Gold Shield policy, what would a member pay out-of-pocket for a 5-day inpatient hospitalization billed at $15,000? Break down the individual deductible, co-insurance, any applicable annual sub-limits, and the final member liability."),
+    (":material/compare_arrows:", "Best-value policy comparison",
+     "Compare inpatient hospitalization and outpatient treatment benefits — annual limits, individual deductibles, co-payments, and any notable exclusions — across all three policies. Which plan offers the lowest member cost for a major surgery requiring hospitalization?"),
 ]
 
 # Inline shield mark — crisper than an emoji inside the brand square.
