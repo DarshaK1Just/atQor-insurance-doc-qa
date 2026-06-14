@@ -20,5 +20,13 @@ font = "sans serif"
 toolbarMode = "minimal"
 showErrorDetails = true
 
+[server]
+# Required for Streamlit Cloud — headless suppresses the browser-open prompt
+# and CORS must be off so the embedded FastAPI backend can serve the UI.
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 200          # MB — match the 200 MB cap shown in the UI
+
 [browser]
 gatherUsageStats = false
