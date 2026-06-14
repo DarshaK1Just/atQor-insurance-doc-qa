@@ -115,6 +115,7 @@ def generate_answer(question: str, history: list[dict],
 
     messages = _build_messages(question, history, chunks)
     model = chat_model()
+    max_tok = settings.max_answer_tokens or None
 
     # 1. Try Structured Outputs (preferred) — skipped if the deployment is known
     #    not to support it (see model_caps), avoiding a wasted round-trip.
@@ -122,7 +123,9 @@ def generate_answer(question: str, history: list[dict],
     if supports_structured_outputs():
         try:
             completion = chat_client().beta.chat.completions.parse(
-                model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
+                model=model, temperature=0.1, messages=messages,
+                response_format=GroundedAnswer,
+                **({"max_tokens": max_tok} if max_tok else {}),
             )
             answer = completion.choices[0].message.parsed
         except Exception as exc:
@@ -136,7 +139,9 @@ def generate_answer(question: str, history: list[dict],
         try:
             completion = chat_client().chat.completions.create(
                 model=model, temperature=0.1, messages=messages,
-                response_format={"type": "json_object"}, **chat_extra_kwargs(),
+                response_format={"type": "json_object"},
+                **({"max_tokens": max_tok} if max_tok else {}),
+                **chat_extra_kwargs(),
             )
             raw = completion.choices[0].message.content or "{}"
             answer = GroundedAnswer.model_validate(json.loads(raw))
@@ -164,6 +169,7 @@ def stream_answer_tokens(question: str, history: list[dict],
 
     messages = _build_messages(question, history, chunks)
     model = chat_model()
+    max_tok = settings.max_answer_tokens or None
 
     # 1. Try Structured-Outputs streaming. Partial parsed objects arrive as the
     #    model emits JSON tokens; we forward `answer_markdown` deltas to the UI.
@@ -171,7 +177,9 @@ def stream_answer_tokens(question: str, history: list[dict],
     if supports_structured_outputs():
         try:
             with chat_client().beta.chat.completions.stream(
-                model=model, temperature=0.1, messages=messages, response_format=GroundedAnswer,
+                model=model, temperature=0.1, messages=messages,
+                response_format=GroundedAnswer,
+                **({"max_tokens": max_tok} if max_tok else {}),
             ) as stream:
                 previous = ""
                 for event in stream:
@@ -253,6 +261,7 @@ def _confidence(n_cited: int, insufficient: bool) -> str:
 def _stream_with_extract_fallback(question: str, history: list[dict],
                                   chunks: list[RetrievedChunk]) -> Iterator[tuple[str, object]]:
     model = chat_model()
+    max_tok = get_settings().max_answer_tokens or None
 
     messages = [{"role": "system", "content": _PLAIN_SYSTEM}]
     for turn in history[-6:]:
@@ -266,7 +275,9 @@ def _stream_with_extract_fallback(question: str, history: list[dict],
     answer_text = ""
     try:
         stream = chat_client().chat.completions.create(
-            model=model, temperature=0.1, messages=messages, stream=True, **chat_extra_kwargs(),
+            model=model, temperature=0.1, messages=messages, stream=True,
+            **({"max_tokens": max_tok} if max_tok else {}),
+            **chat_extra_kwargs(),
         )
         for chunk_evt in stream:
             if not chunk_evt.choices:

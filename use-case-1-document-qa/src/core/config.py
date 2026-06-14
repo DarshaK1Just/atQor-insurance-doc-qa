@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # cold-start on the embed call (visible as a large retrieve_ms). 0 disables.
     embed_keepalive_seconds: int = 240
 
+    # Cap LLM answer length so the model can't produce runaway responses that inflate
+    # latency. 1500 tokens is ~1100 words — more than enough for any insurance Q&A.
+    # Set 0 to disable the cap.
+    max_answer_tokens: int = 1500
+
     # Hard ceiling on any single LLM/HTTP round-trip, so a hung serverless call
     # fails fast instead of wedging an ingestion worker or a chat turn forever.
     request_timeout_seconds: float = 90.0

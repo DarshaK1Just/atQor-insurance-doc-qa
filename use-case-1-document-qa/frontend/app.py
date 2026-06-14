@@ -411,8 +411,8 @@ _ss("messages", [])
 _ss("uploaded_signatures", set())
 _ss("ingestion_lock", False)
 _ss("pending_question", None)
-_ss("awaiting_stream", None)
 _ss("active_citation", None)
+_ss("_streaming_active", False)
 
 
 # ════════════════════════════════════════════════════════════ HTTP
@@ -538,7 +538,7 @@ def corpus_panel_body() -> None:
     # the polling interval recompute. Skip it while a chat answer is streaming
     # (awaiting_stream) so a doc settling mid-conversation can't interrupt the turn.
     if (not in_flight and st.session_state.get("_corpus_polling")
-            and not st.session_state.get("awaiting_stream")):
+            and not st.session_state.get("_streaming_active")):
         st.session_state["_corpus_polling"] = False
         st.rerun()
 
@@ -751,11 +751,10 @@ def render_history() -> None:
 
 
 def run_chat_turn(question: str) -> None:
-    """Stream ONLY the assistant turn for `question`. The user message is already
-    committed to history and shown by render_history() (the transition phase in the
-    main body did that), so we don't re-append or re-render it here. This split is
-    what lets the overview be cleared on a fast transition run BEFORE the long
-    streaming run — so the cards can't linger behind the answer."""
+    """Stream the assistant turn for `question`. The user message has already been
+    appended to st.session_state.messages and rendered by render_history() in the
+    same pass, so this function only handles the assistant card."""
+    st.session_state["_streaming_active"] = True
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         trace_ph = st.empty()
         answer_ph = st.empty()
@@ -844,6 +843,7 @@ def run_chat_turn(question: str) -> None:
             render_citation_chips(answer["citations"], idx)
         with foot_ph.container():
             render_answer_footer(msg["meta"], len(answer["citations"]))
+    st.session_state["_streaming_active"] = False
 
 
 # ════════════════════════════════════════════════════════════ main-area states
@@ -929,7 +929,10 @@ def render_suggestions() -> None:
             if st.button(f"**{title}**\n\n{question}", key=f"sugg_{i}",
                          icon=icon, use_container_width=True):
                 st.session_state.pending_question = question
-                st.rerun()
+                # No explicit st.rerun(): Streamlit reruns naturally on button click.
+                # Calling st.rerun() inside `with overview_slot.container()` would
+                # abort the context manager mid-execution, causing stale content to
+                # persist during the next render.
 
 
 # ════════════════════════════════════════════════════════════ data + gate
@@ -993,10 +996,7 @@ with st.sidebar:
 
 
 # ════════════════════════════════════════════════════════════ main (conversation)
-# Capture chat input FIRST (it stays pinned to the bottom visually regardless of
-# where it's called). Routing it through pending_question — exactly like a
-# suggestion click — means a typed question never renders the hero/suggestions
-# behind the answer, and unifies both entry paths into one render branch.
+# Capture chat input FIRST (pinned to bottom by Streamlit regardless of call order).
 chat_ready = backend_ok and ready_count > 0
 placeholder = ("Ask about your documents…" if chat_ready
                else "Add and index at least one document to start asking…")
@@ -1004,11 +1004,10 @@ typed = st.chat_input(placeholder, disabled=not chat_ready)
 if typed:
     st.session_state.pending_question = typed
 
-pending = st.session_state.pending_question          # just submitted (suggestion/typed)
-awaiting = st.session_state.get("awaiting_stream")   # user turn committed, ready to stream
-has_thread = bool(st.session_state.messages or pending or awaiting)
+pending = st.session_state.pending_question
+has_thread = bool(st.session_state.messages or pending)
 
-# Slim conversation bar with a New-chat action — visible the moment a thread exists.
+# Conversation bar — appears only once a thread exists.
 if has_thread:
     bar = st.columns([1, 0.22], vertical_alignment="center")
     with bar[0]:
@@ -1016,52 +1015,47 @@ if has_thread:
     with bar[1]:
         if st.button("New chat", icon=":material/add_comment:",
                      use_container_width=True, key="new_chat"):
-            try:
-                requests.delete(f"{API}/sessions/{st.session_state.session_id}", timeout=4)
-            except requests.RequestException:
-                pass
+            # Clear local state first so the rerun sees a blank slate immediately,
+            # then best-effort delete the server session (no blocking on failure).
+            _old_sid = st.session_state.session_id
             st.session_state.session_id = uuid.uuid4().hex[:10]
             st.session_state.messages = []
             st.session_state.active_citation = None
             st.session_state.pending_question = None
-            st.session_state.awaiting_stream = None
+            st.session_state["_streaming_active"] = False
+            try:
+                requests.delete(f"{API}/sessions/{_old_sid}", timeout=2)
+            except Exception:
+                pass
             st.rerun()
 
-# The overview (hero / capabilities / suggestions) lives in ONE placeholder. When a
-# conversation is active we leave it empty, which clears those elements.
-overview_slot = st.empty()
-
-# State-aware body: offline → conversation → cold start → indexing → suggestions.
+# State-aware body. The overview is plain conditional code — it never sits inside
+# an st.empty() container — so when has_thread becomes True the overview Python
+# branch is simply not reached; Streamlit rebuilds the component tree from scratch
+# and the suggestion cards are gone without any placeholder-clearing dance.
 if not backend_ok:
-    with overview_slot.container():
-        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
-             '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
-             'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
+    html('<div class="note err-panel"><h3>Backend not reachable</h3>'
+         '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
+         'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
 elif has_thread:
-    overview_slot.empty()
+    # Commit a fresh pending question to history right now (same render pass).
+    # There is no Phase-1 rerun: the overview is already absent because we took
+    # the `elif has_thread:` branch, so streaming starts with a clean page.
+    question_to_stream = None
     if pending:
-        # PHASE 1 (fast): commit the user turn and rerun. This run produces only the
-        # conversation shell, so Streamlit prunes the overview cards before the long
-        # streaming run — the definitive fix for cards lingering behind the answer.
         st.session_state.messages.append({"role": "user", "content": pending})
-        st.session_state.awaiting_stream = pending
         st.session_state.pending_question = None
-        st.rerun()
+        question_to_stream = pending
     render_history()
-    if awaiting:
-        # PHASE 2: page is clean (no overview); stream the assistant answer.
-        st.session_state.awaiting_stream = None
-        run_chat_turn(awaiting)
+    if question_to_stream:
+        run_chat_turn(question_to_stream)
 elif ready_count == 0 and in_flight_count == 0:
-    with overview_slot.container():
-        render_hero_cold()
-        render_capabilities()
-        render_howitworks()
+    render_hero_cold()
+    render_capabilities()
+    render_howitworks()
 elif ready_count == 0 and in_flight_count > 0:
-    with overview_slot.container():
-        render_indexing_wait(in_flight_count)
+    render_indexing_wait(in_flight_count)
 else:
-    with overview_slot.container():
-        render_ready_welcome()
-        render_capabilities()      # platform capabilities ABOVE the sample questions
-        render_suggestions()
+    render_ready_welcome()
+    render_capabilities()
+    render_suggestions()
