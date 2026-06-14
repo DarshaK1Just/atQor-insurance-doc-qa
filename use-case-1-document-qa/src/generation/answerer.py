@@ -45,11 +45,36 @@ _ANSWER_RULES = """GROUND TRUTH (non-negotiable)
 
 ━━━ ADAPT YOUR STRUCTURE TO THE QUESTION TYPE ━━━
 
-◆ SUMMARISATION ("summarise", "describe", "give me an overview of", "what does the … say"):
+◆ SUMMARISATION ("summarise", "describe", "give me an overview of", "what does the … say", "extract a complete structured summary"):
   Do NOT lead with a single sentence — the structured extraction IS the answer.
-  For medical reports extract ALL of: Patient name & MRN, Admission date, Discharge date, Length of stay,
-  Primary diagnosis with ICD code, Secondary diagnoses, Procedure(s) performed (state "None documented" if absent),
-  Attending physician, Discharge condition, Discharge medications, Follow-up instructions.
+  
+  **For medical discharge reports**, extract ALL available fields in this order:
+  • Patient name & MRN/medical record number
+  • Admission date & Discharge date
+  • Length of stay (days)
+  • Primary diagnosis with ICD-10 code
+  • Secondary diagnoses (if any)
+  • Procedure(s) performed with CPT codes (state "None documented" if absent)
+  • Attending physician/surgeon
+  • Discharge condition
+  • Prescribed medications (on discharge)
+  • Follow-up instructions
+  
+  **Format**: Create a clean two-column markdown table:
+  ```
+  | Field | Value [n] |
+  |-------|-----------|
+  | Patient name | Jane Q. Member [1] |
+  | MRN | NMC-447120 [1] |
+  | ... | ... [n] |
+  ```
+  
+  **CRITICAL**: 
+  - Every value row MUST include [n] citation immediately after the value
+  - Extract the EXACT values from the source (dates, codes, names, numbers)
+  - If a field has multiple values (e.g., multiple medications), list them all with citations
+  - Use the exact medical terminology, codes, and units from the source
+  
   For policy documents extract: effective date, insured parties, all benefit sections present, key limits.
   Organise as a "Field | Value [citation]" table — one row per field, cited per row.
 
@@ -62,9 +87,21 @@ _ANSWER_RULES = """GROUND TRUTH (non-negotiable)
   5. Flags: anything that needs manual review or additional documents
 
 ◆ FIELD EXTRACTION ("list the", "extract", "what is the X and Y and Z from"):
-  Return a two-column "Field | Value [citation]" table using the EXACT field names the user requested
-  — in the ORDER they were asked — never rename, rephrase, or reorder them.
-  After the table add a "Notes" row for any operationally relevant adjacent context.
+  Return a two-column markdown table:
+  ```
+  | Field | Value [n] |
+  |-------|-----------|
+  | Field 1 | extracted value [n] |
+  | Field 2 | extracted value [n] |
+  ```
+  
+  **REQUIREMENTS**:
+  - Use the EXACT field names the user requested in their ORDER
+  - Never rename, rephrase, or reorder fields
+  - Every row MUST include [n] citation immediately after the value, even if all data comes from one source
+  - Extract exact values (don't paraphrase numbers, dates, codes, names)
+  
+  After the table, add a "Notes" row for any operationally relevant adjacent context.
 
 ◆ POLICY COVERAGE ("what is the limit / deductible / co-pay / benefit / coverage for"):
   1. One-sentence direct answer with headline figures in **bold**.
@@ -281,10 +318,34 @@ def _citations_from_markers(answer_text: str, chunks: list[RetrievedChunk]) -> l
     return out
 
 
-def _confidence(n_cited: int, insufficient: bool) -> str:
+def _confidence(n_cited: int, insufficient: bool, answer_text: str = "") -> str:
+    """Calculate confidence based on citations and answer quality indicators.
+    
+    Special handling for structured extractions: if the answer contains a table
+    or structured data with specific values (not just 'Not documented'), it's
+    likely grounded even with few citation markers."""
     if insufficient:
         return "low"
-    return "high" if n_cited >= 2 else ("medium" if n_cited == 1 else "low")
+    
+    # High confidence: multiple citations OR a well-structured table with data
+    if n_cited >= 2:
+        return "high"
+    
+    # Check if this is a structured extraction with substantive content
+    has_table = "|" in answer_text and "---" in answer_text
+    has_substantive_data = (
+        has_table and 
+        len(answer_text) > 200 and  # Reasonable amount of content
+        answer_text.count("Not documented") < 5  # Not mostly missing data
+    )
+    
+    if has_substantive_data and n_cited >= 1:
+        return "high"  # Table with at least one citation and real data
+    elif has_substantive_data and n_cited == 0:
+        return "medium"  # Table with data but no explicit markers
+    
+    # Default logic for non-table answers
+    return "medium" if n_cited == 1 else "low"
 
 
 def _stream_with_extract_fallback(question: str, history: list[dict],
@@ -333,6 +394,6 @@ def _stream_with_extract_fallback(question: str, history: list[dict],
         answer_markdown=answer_text or _REFUSAL.answer_markdown,
         citations=citations,
         insufficient_context=insufficient,
-        confidence=_confidence(len(citations), insufficient),
+        confidence=_confidence(len(citations), insufficient, answer_text),
     )
     yield "final", _validate(answer, len(chunks))
