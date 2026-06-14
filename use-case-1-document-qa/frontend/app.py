@@ -1007,40 +1007,46 @@ if typed:
 pending = st.session_state.pending_question
 has_thread = bool(st.session_state.messages or pending)
 
-# Conversation bar — appears only once a thread exists.
-if has_thread:
-    bar = st.columns([1, 0.22], vertical_alignment="center")
-    with bar[0]:
-        html('<div class="microlabel" style="margin:.1rem 0 0;">Conversation</div>')
-    with bar[1]:
-        if st.button("New chat", icon=":material/add_comment:",
-                     use_container_width=True, key="new_chat"):
-            # Clear local state first so the rerun sees a blank slate immediately,
-            # then best-effort delete the server session (no blocking on failure).
-            _old_sid = st.session_state.session_id
-            st.session_state.session_id = uuid.uuid4().hex[:10]
-            st.session_state.messages = []
-            st.session_state.active_citation = None
-            st.session_state.pending_question = None
-            st.session_state["_streaming_active"] = False
-            try:
-                requests.delete(f"{API}/sessions/{_old_sid}", timeout=2)
-            except Exception:
-                pass
-            st.rerun()
+# ── STABLE LAYOUT ANCHOR ─────────────────────────────────────────────────────
+# header_area is rendered on EVERY run (even empty), so it's always exactly one
+# element. That keeps `overview_slot` (declared right after it) at a FIXED delta
+# position across runs — which is what lets overview_slot.empty() actually clear
+# the suggestion cards. Previously the New-chat bar was conditional, so the slot
+# shifted position between the overview run and the chat run and never cleared,
+# leaving the cards lingering behind the streaming answer (and over the button).
+header_area = st.container()
+with header_area:
+    if has_thread:
+        bar = st.columns([1, 0.22], vertical_alignment="center")
+        with bar[0]:
+            html('<div class="microlabel" style="margin:.1rem 0 0;">Conversation</div>')
+        with bar[1]:
+            if st.button("New chat", icon=":material/add_comment:",
+                         use_container_width=True, key="new_chat"):
+                _old_sid = st.session_state.session_id
+                st.session_state.session_id = uuid.uuid4().hex[:10]
+                st.session_state.messages = []
+                st.session_state.active_citation = None
+                st.session_state.pending_question = None
+                st.session_state["_streaming_active"] = False
+                try:
+                    requests.delete(f"{API}/sessions/{_old_sid}", timeout=2)
+                except Exception:
+                    pass
+                st.rerun()
 
-# State-aware body. The overview is plain conditional code — it never sits inside
-# an st.empty() container — so when has_thread becomes True the overview Python
-# branch is simply not reached; Streamlit rebuilds the component tree from scratch
-# and the suggestion cards are gone without any placeholder-clearing dance.
+# The overview lives in ONE placeholder at this fixed position. On a conversation
+# turn we EMPTY it first — an immediate clear delta — so the cards are gone before
+# the (long) streaming run starts, instead of lingering until the run ends.
+overview_slot = st.empty()
+
 if not backend_ok:
-    html('<div class="note err-panel"><h3>Backend not reachable</h3>'
-         '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
-         'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
+    with overview_slot.container():
+        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
+             '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
+             'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
 elif has_thread:
-    # Commit a fresh pending question to history right now (same render pass).
-    # There is no Phase-1 rerun: the overview is already absent because we took
-    # the `elif has_thread:` branch, so streaming starts with a clean page.
+    overview_slot.empty()            # clear the overview immediately (stable position)
     question_to_stream = None
     if pending:
         st.session_state.messages.append({"role": "user", "content": pending})
@@ -1050,12 +1056,15 @@ elif has_thread:
     if question_to_stream:
         run_chat_turn(question_to_stream)
 elif ready_count == 0 and in_flight_count == 0:
-    render_hero_cold()
-    render_capabilities()
-    render_howitworks()
+    with overview_slot.container():
+        render_hero_cold()
+        render_capabilities()
+        render_howitworks()
 elif ready_count == 0 and in_flight_count > 0:
-    render_indexing_wait(in_flight_count)
+    with overview_slot.container():
+        render_indexing_wait(in_flight_count)
 else:
-    render_ready_welcome()
-    render_capabilities()
-    render_suggestions()
+    with overview_slot.container():
+        render_ready_welcome()
+        render_capabilities()
+        render_suggestions()
