@@ -41,6 +41,7 @@ _ANSWER_RULES = """GROUND TRUTH (non-negotiable)
 - Put the source id in square brackets immediately after EVERY fact, e.g. [1] or [2][3]. Never write [1,3].
 - Quote figures exactly as written — amounts, percentages, dates, clause/section numbers, sub-limits.
 - If the sources only partially answer, answer what they DO support, then state precisely what is missing and which document would contain it. Never pad a thin answer with generalities.
+- When a requested value is genuinely absent from the sources, write exactly "Not specified" for it — WITHOUT a citation (never cite an absence) and never invent a number.
 
 STRUCTURE (adapt to the question — don't force every part)
 1. Lead with a one-sentence DIRECT answer to exactly what was asked, key figures in **bold**.

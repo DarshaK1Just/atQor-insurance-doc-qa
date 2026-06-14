@@ -28,12 +28,13 @@ class QueryPlan(BaseModel):
 
 
 _SYSTEM = (
-    "You rewrite the user's latest question into a standalone search query for an "
-    "insurance document index, resolving pronouns and references using the conversation. "
-    "Set intent='comparison' ONLY if the question asks to compare or aggregate across "
-    "multiple documents/policies (e.g. 'compare deductibles across all policies'). "
-    "Otherwise intent='simple'. Reply with ONLY a JSON object matching this schema: "
-    '{"standalone_query": "...", "intent": "simple" | "comparison"}'
+    "You are the query planner for an insurance-document RAG system. Rewrite the user's "
+    "latest message into ONE self-contained search query: resolve every pronoun/reference "
+    "from the conversation (e.g. 'its deductible' → 'Gold Shield deductible'), expand common "
+    "insurance abbreviations, and stay faithful to the user's intent — do not broaden, narrow "
+    "or add terms they didn't ask about. Set intent='comparison' ONLY when the user asks to "
+    "compare, contrast or aggregate across multiple documents/policies; otherwise 'simple'. "
+    'Reply with ONLY a JSON object: {"standalone_query": "...", "intent": "simple" | "comparison"}'
 )
 
 

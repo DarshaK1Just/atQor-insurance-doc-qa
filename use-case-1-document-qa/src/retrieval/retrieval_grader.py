@@ -26,7 +26,8 @@ _MAX_PREVIEW_CHARS = 320
 class RetrievalGrade(BaseModel):
     sufficient: bool = Field(
         description="True if the numbered sources contain enough information to answer the question")
-    refined_query: str = Field(
+    refined_query: str | None = Field(
+        default=None,
         description="If not sufficient, an improved search query (synonyms / broader / more specific); "
                     "otherwise echo the original query")
     reason: str = Field(default="", description="One short clause explaining the judgement")
@@ -88,8 +89,8 @@ def grade_retrieval(query: str, chunks: list[RetrievedChunk]) -> RetrievalGrade:
             log.warning("grader_failed_open", error=str(exc))
             return RetrievalGrade(sufficient=True, refined_query=query, reason="grader unavailable")
 
-    # Never return an empty refined query.
-    if not grade.refined_query.strip():
+    # Never return an empty/null refined query (some models emit null for it).
+    if not (grade.refined_query or "").strip():
         grade.refined_query = query
     log.info("retrieval_graded", sufficient=grade.sufficient, refined_query=grade.refined_query)
     return grade

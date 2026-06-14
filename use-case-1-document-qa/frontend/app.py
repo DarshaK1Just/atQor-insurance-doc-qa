@@ -118,25 +118,25 @@ st.markdown("""
 html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--ink); }
 .stApp { background:var(--bg); }
 
-/* tighten the page rhythm, kill the top gap, hide dev chrome.
-   overflow:visible is CRITICAL — the collapsed-sidebar re-open button lives in
-   this 0-height header; without it the button is clipped and the sidebar can't
-   be brought back. */
-[data-testid="stHeader"]{ background:transparent; height:0; overflow:visible; }
-#MainMenu, footer { visibility:hidden; height:0; }
-.block-container{ padding-top:1.1rem !important; padding-bottom:2rem !important; max-width:1180px; }
+/* Keep the native header — it hosts the sidebar collapse/expand toggle, so we
+   must NOT zero it (that was hiding the re-open control). Just make it
+   transparent and pull the content up so there's no big top gap. */
+[data-testid="stHeader"]{ background:transparent; }
+#MainMenu, footer { visibility:hidden; }
+.block-container{ padding-top:.4rem !important; padding-bottom:2rem !important; max-width:1180px; }
 /* Trim the empty gap under the pinned chat input. */
 [data-testid="stBottom"] > div{ padding-bottom:.4rem !important; }
 [data-testid="stBottomBlockContainer"]{ padding-top:.3rem !important; padding-bottom:.5rem !important; }
 [data-testid="stVerticalBlock"]{ gap:.7rem; }
 
-/* Never show the "Running…" status widget (the flash of fetch_health() etc.),
-   and never dim/blur the page while a rerun is in flight. */
-[data-testid="stStatusWidget"], [data-testid="stToolbar"]{ display:none !important; }
+/* Hide only the "Running…" status widget — NOT the whole toolbar (the sidebar
+   re-open control can live there). Deploy/menu are already hidden via
+   toolbarMode="minimal" in config.toml. */
+[data-testid="stStatusWidget"]{ display:none !important; }
 /* ALWAYS keep the sidebar collapse/expand controls clickable and on top so the
    sidebar can never get stuck hidden. */
 [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"]{
-  visibility:visible !important; opacity:1 !important; display:flex !important; z-index:1001 !important; }
+  visibility:visible !important; opacity:1 !important; z-index:1001 !important; }
 [data-stale="true"], [data-stale="true"] *{ opacity:1 !important; }
 [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] *{ transition:none !important; }
 [data-testid="stSkeleton"]{ display:none !important; }
@@ -305,6 +305,13 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 [data-testid="stChatMessage"] td:first-child{ color:var(--ink); font-weight:600; }
 /* footer chips never touch the card's bottom edge */
 .ans-foot{ margin-bottom:.15rem; }
+/* compact, minimal source-citation buttons (they render inside the chat message,
+   so this scope never touches the suggestion cards on the overview) */
+[data-testid="stChatMessage"] .stButton button{ font-size:.72rem !important; font-weight:600 !important;
+  padding:.3rem .5rem !important; border-radius:9px !important; line-height:1.25 !important;
+  min-height:unset !important; text-align:left; color:var(--ink-2); }
+[data-testid="stChatMessage"] .stButton button:hover{ border-color:var(--violet-2); color:var(--violet); }
+[data-testid="stChatMessage"] .stButton button p{ font-size:.72rem !important; }
 
 /* ───────────────────────── chat: user bubble (right) ───────────────────────── */
 .umsg{ display:flex; justify-content:flex-end; align-items:flex-start; gap:.55rem; margin:.2rem 0 .7rem; }
@@ -602,23 +609,40 @@ def citation_dialog(c: dict) -> None:
         return
 
     if ext == ".pdf":
-        # Chrome BLOCKS PDFs loaded via data: URIs in an iframe — that's the broken
-        # box you saw. A blob: URL built client-side renders fine, so we ship the
-        # bytes as base64 and convert to a Blob in the browser.
+        # Render the cited page with PDF.js to a <canvas>. Chrome blocks PDFs via
+        # data:/blob: in a sandboxed component iframe (the broken box you saw), but
+        # PDF.js is pure JS + canvas, so it renders reliably. The library loads
+        # from a CDN (the browser has internet); on failure we fall back to download.
         b64 = base64.b64encode(data).decode()
+        page = int(c.get("page") or 1)
         components.html(
-            f"""<div id="pv" style="height:560px;border:1px solid #ECE9F4;border-radius:10px;overflow:hidden"></div>
+            """
+<div id="pv" style="height:560px;overflow:auto;border:1px solid #ECE9F4;border-radius:10px;
+     background:#F8F7FD;display:flex;justify-content:center;align-items:flex-start;padding:10px;"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-(function(){{
-  const raw=atob("{b64}"), arr=new Uint8Array(raw.length);
-  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
-  const url=URL.createObjectURL(new Blob([arr],{{type:"application/pdf"}}));
-  const f=document.createElement("iframe");
-  f.src=url+"#page={c['page']}"; f.style.width="100%"; f.style.height="560px"; f.style.border="none";
-  document.getElementById("pv").appendChild(f);
-}})();
-</script>""",
-            height=576,
+(function(){
+  const box=document.getElementById("pv");
+  const fail=m=>{box.innerHTML='<p style="color:#8B86A3;font:14px Inter,sans-serif;margin:auto">'+m+'</p>';};
+  if(!window.pdfjsLib){ fail('Preview unavailable — use Download below.'); return; }
+  pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const raw=atob("%B64%"); const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+  pdfjsLib.getDocument({data:bytes}).promise
+    .then(pdf=>pdf.getPage(Math.min(%PAGE%, pdf.numPages)))
+    .then(page=>{
+      const vp=page.getViewport({scale:1.5});
+      const cv=document.createElement("canvas");
+      cv.width=vp.width; cv.height=vp.height;
+      cv.style.maxWidth="100%"; cv.style.height="auto";
+      cv.style.boxShadow="0 2px 12px rgba(16,24,40,.14)"; cv.style.borderRadius="6px";
+      box.appendChild(cv);
+      page.render({canvasContext:cv.getContext("2d"), viewport:vp});
+    }).catch(()=>fail("Couldn't render this PDF — use Download below."));
+})();
+</script>
+""".replace("%B64%", b64).replace("%PAGE%", str(page)),
+            height=582,
         )
     elif ext in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
         st.image(data, use_container_width=True)
@@ -651,16 +675,23 @@ def render_trace_html(state: dict[str, str]) -> str:
     return f'<div class="trace">{"".join(rows)}</div>'
 
 
+def _short_doc(name: str) -> str:
+    """Compact a document name for a citation chip: drop the extension and the
+    common 'policy-/claim-/medical-' prefix so the chips stay small."""
+    base = re.sub(r"\.(pdf|docx|png|jpe?g|tiff?)$", "", name or "", flags=re.I)
+    return re.sub(r"^(policy|claim|medical)[-_]", "", base, flags=re.I)
+
+
 def render_citation_chips(citations: list[dict], msg_idx: int) -> None:
     if not citations:
         return
     html('<div class="cite-label">Sources</div>')
-    cols = st.columns(min(len(citations), 4))
+    cols = st.columns(min(len(citations), 6))   # denser grid = smaller, minimal chips
     for i, c in enumerate(citations):
         with cols[i % len(cols)]:
-            if st.button(f"[{c['source_id']}] {c['doc_name']} · p{c['page']}",
-                         key=f"cite_{msg_idx}_{i}", icon=":material/description:",
-                         use_container_width=True):
+            if st.button(f"[{c['source_id']}] {_short_doc(c['doc_name'])} · p{c['page']}",
+                         key=f"cite_{msg_idx}_{i}", use_container_width=True,
+                         help=f"{c['doc_name']} · page {c['page']}"):
                 st.session_state.active_citation = c
                 citation_dialog(c)
 
@@ -747,8 +778,8 @@ def run_chat_turn(question: str) -> None:
                     trace["generating"] = "active"
                 elif event == "token":
                     buffer += data.get("delta", "")
-                    answer_ph.markdown(_md(buffer) + " ▌")
-                    continue
+                    continue  # accumulate only; render the finished markdown ONCE at the
+                    # end so partial tables never flash as raw pipes/dashes mid-stream
                 elif event == "done":
                     trace["generating"] = "done"
                     final = data
@@ -774,7 +805,6 @@ def run_chat_turn(question: str) -> None:
         final_text = answer["answer_markdown"]
         if len(buffer) > len(final_text):
             final_text = buffer
-        answer_ph.markdown(_md(final_text))
 
         msg = {
             "role": "assistant",
@@ -786,11 +816,10 @@ def run_chat_turn(question: str) -> None:
         }
         st.session_state.messages.append(msg)
         idx = len(st.session_state.messages) - 1
+        answer_ph.markdown(_md(final_text))
         if msg["insufficient_context"]:
-            with answer_ph.container():
-                st.markdown(_md(final_text))
-                html('<div class="insuf">The uploaded documents don\'t contain enough '
-                     'information to fully answer this.</div>')
+            html('<div class="insuf">The uploaded documents don\'t contain enough '
+                 'information to fully answer this.</div>')
         with cite_ph.container():
             render_citation_chips(answer["citations"], idx)
         with foot_ph.container():
@@ -967,23 +996,34 @@ if has_thread:
             st.session_state.pending_question = None
             st.rerun()
 
+# The overview (hero / suggestions / capabilities) lives in ONE placeholder. When
+# a conversation is active we leave it empty, which clears those elements
+# immediately — otherwise Streamlit keeps them painted behind the answer for the
+# whole (long) streaming run, which is the "4 cards behind the chat" bug.
+overview_slot = st.empty()
+
 # State-aware body: offline → conversation → cold start → indexing → suggestions.
 if not backend_ok:
-    html('<div class="note err-panel"><h3>Backend not reachable</h3>'
-         '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
-         'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
+    with overview_slot.container():
+        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
+             '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
+             'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
 elif has_thread:
+    overview_slot.empty()            # clear any prior overview before streaming
     render_history()
     if pending:
         st.session_state.pending_question = None
         run_chat_turn(pending)
 elif ready_count == 0 and in_flight_count == 0:
-    render_hero_cold()
-    render_howitworks()
-    render_capabilities()
+    with overview_slot.container():
+        render_hero_cold()
+        render_howitworks()
+        render_capabilities()
 elif ready_count == 0 and in_flight_count > 0:
-    render_indexing_wait(in_flight_count)
+    with overview_slot.container():
+        render_indexing_wait(in_flight_count)
 else:
-    render_ready_welcome()
-    render_suggestions()
-    render_capabilities()
+    with overview_slot.container():
+        render_ready_welcome()
+        render_suggestions()
+        render_capabilities()
