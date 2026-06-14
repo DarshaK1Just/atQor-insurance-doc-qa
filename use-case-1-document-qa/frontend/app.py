@@ -246,11 +246,24 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
   display:inline-flex; align-items:center; gap:.35rem; }
 
 /* capabilities strip — the tech line, moved out of the sidebar into the overview */
-.caps{ display:grid; grid-template-columns:repeat(4,1fr); gap:.6rem; margin-top:.85rem; }
-.cap{ background:#fff; border:1px solid var(--line); border-radius:12px; padding:.7rem .8rem; box-shadow:var(--shadow-sm); }
-.cap b{ display:block; font-size:.8rem; color:var(--ink); font-weight:700; margin-bottom:.15rem; }
-.cap span{ font-size:.72rem; color:var(--ink-3); line-height:1.4; }
+.caps{ display:grid; grid-template-columns:repeat(4,1fr); gap:.7rem; margin:.2rem 0 1.1rem; }
+.cap{ display:flex; align-items:flex-start; gap:.6rem; background:#fff; border:1px solid var(--line);
+  border-radius:14px; padding:.85rem .9rem; box-shadow:var(--shadow-sm); position:relative; overflow:hidden;
+  transition:border-color .15s, box-shadow .15s, transform .15s; }
+.cap::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
+  background:linear-gradient(180deg,var(--violet-2),var(--indigo)); }
+.cap:hover{ border-color:#D8CFF0; box-shadow:var(--shadow-md); transform:translateY(-1px); }
+.cap-ic{ width:34px; height:34px; flex:0 0 34px; border-radius:10px; display:grid; place-items:center;
+  background:linear-gradient(135deg,#EDE9FE,#E0E7FF); color:var(--violet); }
+.cap-ic svg{ width:18px; height:18px; }
+.cap b{ display:block; font-size:.85rem; color:var(--ink); font-weight:800; margin-bottom:.15rem; letter-spacing:-.01em; }
+.cap span{ font-size:.74rem; color:var(--ink-3); line-height:1.4; }
 @media (max-width:900px){ .caps{ grid-template-columns:repeat(2,1fr); } }
+
+/* source-preview modal: compact header, generous page area */
+.src-head{ font-size:1rem; font-weight:800; color:var(--ink); letter-spacing:-.01em; margin:.1rem 0 .6rem; }
+.src-head span{ color:var(--ink-3); font-weight:600; }
+[data-testid="stDialog"] [data-testid="stDialogContent"]{ padding-top:1rem !important; }
 
 /* ───────────────────────── pipeline strip (how it works) ───────────────────────── */
 .pipe{ display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:.1rem 0 .3rem; }
@@ -322,7 +335,10 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
   background:#EDE9FE; color:var(--violet-3); margin-top:.05rem; }
 
 /* ───────────────────────── chat input — force light, never dark ───────────────────────── */
-[data-testid="stBottom"], [data-testid="stBottomBlockContainer"]{ background:transparent !important; }
+/* the pinned bottom bar must read as the SAME canvas colour — no seam/shade */
+[data-testid="stBottom"], [data-testid="stBottom"] > div,
+[data-testid="stBottomBlockContainer"]{ background:var(--bg) !important; border:none !important;
+  box-shadow:none !important; }
 [data-testid="stChatInput"]{ background:var(--card) !important; border:1px solid var(--line) !important;
   border-radius:14px !important; box-shadow:var(--shadow-sm); transition:border-color .15s, box-shadow .15s; }
 [data-testid="stChatInput"]:focus-within{ border-color:var(--violet-2) !important; box-shadow:0 0 0 3px var(--ring); }
@@ -365,12 +381,16 @@ def html(markup: str) -> None:
 
 
 def _md(text: str) -> str:
-    """Prepare answer markdown for st.markdown:
-    1. Escape '$' — Streamlit renders `$…$` as LaTeX math, which silently ate
+    """Prepare answer markdown for display:
+    1. Strip inline [n] / [n][m] citation markers — they're visual noise in the
+       prose and tables; the Sources chips below carry the attribution.
+    2. Escape '$' — Streamlit renders `$…$` as LaTeX math, which silently ate
        dollar amounts and bold markers ('$20,000 ... **' became italic math).
-    2. Insert a blank line before a markdown table — without it Streamlit prints
+    3. Insert a blank line before a markdown table — without it Streamlit prints
        the raw pipes and a long dash run (the 'infinite ----') instead of a table."""
-    t = (text or "").replace("$", "\\$")
+    # drop [5], [5][6]… but NOT a markdown link like [1](url) — the (?!\() guard
+    t = re.sub(r"[ \t]*\[\d+\](?:\[\d+\])*(?!\()", "", text or "")
+    t = t.replace("$", "\\$")
     t = re.sub(r"([^\n|])\n(\|[^\n]*\|)", r"\1\n\n\2", t)
     return t
 
@@ -391,6 +411,7 @@ _ss("messages", [])
 _ss("uploaded_signatures", set())
 _ss("ingestion_lock", False)
 _ss("pending_question", None)
+_ss("awaiting_stream", None)
 _ss("active_citation", None)
 
 
@@ -514,8 +535,10 @@ def corpus_panel_body() -> None:
          f'<div class="corpus">{cards}</div>')
 
     # When everything has settled, do exactly ONE app rerun so the chat gate and
-    # the polling interval recompute. After that the fragment stays calm.
-    if not in_flight and st.session_state.get("_corpus_polling"):
+    # the polling interval recompute. Skip it while a chat answer is streaming
+    # (awaiting_stream) so a doc settling mid-conversation can't interrupt the turn.
+    if (not in_flight and st.session_state.get("_corpus_polling")
+            and not st.session_state.get("awaiting_stream")):
         st.session_state["_corpus_polling"] = False
         st.rerun()
 
@@ -586,9 +609,9 @@ def load_demo_corpus() -> bool:
 # ════════════════════════════════════════════════════════════ citation modal
 @st.dialog("Source preview", width="large")
 def citation_dialog(c: dict) -> None:
-    st.markdown(f"#### [{c['source_id']}] {c['doc_name']} · page {c['page']}")
-    st.caption("Verbatim quote from the source")
-    st.info(_md(c.get("quote", "")))
+    # Compact header only — no quote block — so the page render gets the space.
+    html(f'<div class="src-head">[{c["source_id"]}] {escape(str(c["doc_name"]))} '
+         f'<span>· page {c["page"]}</span></div>')
     doc_id = c.get("doc_id")
     if not doc_id:
         st.caption("Source document id unavailable for this citation.")
@@ -617,7 +640,7 @@ def citation_dialog(c: dict) -> None:
         page = int(c.get("page") or 1)
         components.html(
             """
-<div id="pv" style="height:560px;overflow:auto;border:1px solid #ECE9F4;border-radius:10px;
+<div id="pv" style="height:660px;overflow:auto;border:1px solid #ECE9F4;border-radius:10px;
      background:#F8F7FD;display:flex;justify-content:center;align-items:flex-start;padding:10px;"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
@@ -642,7 +665,7 @@ def citation_dialog(c: dict) -> None:
 })();
 </script>
 """.replace("%B64%", b64).replace("%PAGE%", str(page)),
-            height=582,
+            height=682,
         )
     elif ext in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
         st.image(data, use_container_width=True)
@@ -699,13 +722,11 @@ def render_citation_chips(citations: list[dict], msg_idx: int) -> None:
 def render_answer_footer(meta: dict, n_citations: int) -> None:
     conf = escape(meta.get("confidence") or "—")
     intent = escape(meta.get("intent", "simple"))
-    query = escape(meta.get("standalone_query", ""))
     html(f"""
     <div class="ans-foot">
         <span class="chip conf-{conf}">confidence: {conf}</span>
         <span class="chip intent {intent}">{intent}</span>
         <span class="chip">{n_citations} citation(s)</span>
-        <span class="chip q" title="{query}">🔎 {query}</span>
     </div>
     """)
 
@@ -730,12 +751,11 @@ def render_history() -> None:
 
 
 def run_chat_turn(question: str) -> None:
-    """Stream one turn: user msg → trace → tokens → citations → footer. No
-    `st.rerun()` — everything renders into stable placeholders, then the message
-    is appended so the next natural rerun finds it in history."""
-    st.session_state.messages.append({"role": "user", "content": question})
-    render_user_msg(question)
-
+    """Stream ONLY the assistant turn for `question`. The user message is already
+    committed to history and shown by render_history() (the transition phase in the
+    main body did that), so we don't re-append or re-render it here. This split is
+    what lets the overview be cleared on a fast transition run BEFORE the long
+    streaming run — so the cards can't linger behind the answer."""
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         trace_ph = st.empty()
         answer_ph = st.empty()
@@ -828,14 +848,24 @@ def run_chat_turn(question: str) -> None:
 
 # ════════════════════════════════════════════════════════════ main-area states
 def render_capabilities() -> None:
-    """The platform's capabilities, as a structured strip on the overview — this
-    replaces the cramped tech line that used to sit in the sidebar."""
-    html("""
+    """The platform's capabilities as a prominent, structured strip on the overview
+    (above the sample questions) — the headline 'what this does' for the product."""
+    svg = {
+        "search": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
+        "doc": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>',
+        "cite": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+        "shield": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
+    }
+    html(f"""
     <div class="caps">
-        <div class="cap"><b>Azure AI Search</b><span>Hybrid BM25 + vector retrieval</span></div>
-        <div class="cap"><b>Document Intelligence</b><span>Layout-aware extraction &amp; OCR</span></div>
-        <div class="cap"><b>Page-level citations</b><span>Every fact traced to its source</span></div>
-        <div class="cap"><b>Agentic grounding</b><span>Evidence checked before answering</span></div>
+        <div class="cap"><div class="cap-ic">{svg['search']}</div>
+            <div><b>Azure AI Search</b><span>Hybrid BM25 + vector retrieval</span></div></div>
+        <div class="cap"><div class="cap-ic">{svg['doc']}</div>
+            <div><b>Document Intelligence</b><span>Layout-aware extraction &amp; OCR</span></div></div>
+        <div class="cap"><div class="cap-ic">{svg['cite']}</div>
+            <div><b>Page-level citations</b><span>Every fact traced to its source</span></div></div>
+        <div class="cap"><div class="cap-ic">{svg['shield']}</div>
+            <div><b>Agentic grounding</b><span>Evidence checked before answering</span></div></div>
     </div>
     """)
 
@@ -974,11 +1004,11 @@ typed = st.chat_input(placeholder, disabled=not chat_ready)
 if typed:
     st.session_state.pending_question = typed
 
-pending = st.session_state.pending_question
-has_thread = bool(st.session_state.messages or pending)
+pending = st.session_state.pending_question          # just submitted (suggestion/typed)
+awaiting = st.session_state.get("awaiting_stream")   # user turn committed, ready to stream
+has_thread = bool(st.session_state.messages or pending or awaiting)
 
-# Slim conversation bar with a New-chat action — visible the moment a thread
-# exists (including the very first turn, since `pending` is already set).
+# Slim conversation bar with a New-chat action — visible the moment a thread exists.
 if has_thread:
     bar = st.columns([1, 0.22], vertical_alignment="center")
     with bar[0]:
@@ -994,12 +1024,11 @@ if has_thread:
             st.session_state.messages = []
             st.session_state.active_citation = None
             st.session_state.pending_question = None
+            st.session_state.awaiting_stream = None
             st.rerun()
 
-# The overview (hero / suggestions / capabilities) lives in ONE placeholder. When
-# a conversation is active we leave it empty, which clears those elements
-# immediately — otherwise Streamlit keeps them painted behind the answer for the
-# whole (long) streaming run, which is the "4 cards behind the chat" bug.
+# The overview (hero / capabilities / suggestions) lives in ONE placeholder. When a
+# conversation is active we leave it empty, which clears those elements.
 overview_slot = st.empty()
 
 # State-aware body: offline → conversation → cold start → indexing → suggestions.
@@ -1009,21 +1038,30 @@ if not backend_ok:
              '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
              'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
 elif has_thread:
-    overview_slot.empty()            # clear any prior overview before streaming
-    render_history()
+    overview_slot.empty()
     if pending:
+        # PHASE 1 (fast): commit the user turn and rerun. This run produces only the
+        # conversation shell, so Streamlit prunes the overview cards before the long
+        # streaming run — the definitive fix for cards lingering behind the answer.
+        st.session_state.messages.append({"role": "user", "content": pending})
+        st.session_state.awaiting_stream = pending
         st.session_state.pending_question = None
-        run_chat_turn(pending)
+        st.rerun()
+    render_history()
+    if awaiting:
+        # PHASE 2: page is clean (no overview); stream the assistant answer.
+        st.session_state.awaiting_stream = None
+        run_chat_turn(awaiting)
 elif ready_count == 0 and in_flight_count == 0:
     with overview_slot.container():
         render_hero_cold()
-        render_howitworks()
         render_capabilities()
+        render_howitworks()
 elif ready_count == 0 and in_flight_count > 0:
     with overview_slot.container():
         render_indexing_wait(in_flight_count)
 else:
     with overview_slot.container():
         render_ready_welcome()
+        render_capabilities()      # platform capabilities ABOVE the sample questions
         render_suggestions()
-        render_capabilities()
