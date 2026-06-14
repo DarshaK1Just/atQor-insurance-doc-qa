@@ -120,6 +120,77 @@ Open your browser and navigate to:
 - **Frontend UI**: http://localhost:8501
 - **API Docs**: http://localhost:8000/docs
 
+## ☁️ Deploying to Streamlit Cloud
+
+### Prerequisites
+1. Push your code to a GitHub repository
+2. Have your Azure service credentials ready
+
+### Deployment Steps
+
+1. **Go to [Streamlit Cloud](https://share.streamlit.io/)**
+
+2. **Click "New app" and configure:**
+   - **Repository**: `your-username/atQor-insurance-doc-qa`
+   - **Branch**: `master`
+   - **Main file path**: `streamlit_app.py`
+
+3. **Configure Secrets** (Click "Advanced settings" → "Secrets"):
+   
+   Paste your environment variables in TOML format:
+   
+   ```toml
+   # Azure AI Foundry
+   AZURE_OPENAI_ENDPOINT = "https://your-resource.openai.azure.com/"
+   AZURE_OPENAI_API_KEY = "your-api-key"
+   AZURE_OPENAI_API_VERSION = "2024-05-01-preview"
+   AZURE_OPENAI_CHAT_DEPLOYMENT = "your-chat-model"
+   AZURE_OPENAI_EMBED_DEPLOYMENT = "text-embedding-3-small"
+   EMBED_DIMENSIONS = "1536"
+   
+   # Azure Document Intelligence
+   DOCINTEL_ENDPOINT = "https://your-docintel.cognitiveservices.azure.com/"
+   DOCINTEL_KEY = "your-docintel-key"
+   DOCINTEL_PAGE_WINDOW = "2"
+   
+   # Azure AI Search
+   SEARCH_ENDPOINT = "https://your-search.search.windows.net"
+   SEARCH_KEY = "your-search-key"
+   SEARCH_INDEX_NAME = "insurance-chunks"
+   
+   # Azure Blob Storage (optional)
+   BLOB_CONNECTION_STRING = "your-connection-string"
+   BLOB_CONTAINER_ORIGINALS = "originals"
+   BLOB_CONTAINER_EXTRACTS = "extracts"
+   
+   # App Configuration
+   DATA_DIR = "./data"
+   CHUNK_MAX_TOKENS = "512"
+   CHUNK_OVERLAP_TOKENS = "80"
+   TOP_K = "5"
+   
+   # LLM Provider (azure or gemini)
+   LLM_PROVIDER = "gemini"
+   GEMINI_API_KEY = "your-gemini-key"
+   GEMINI_CHAT_MODEL = "gemini-2.5-flash"
+   
+   # Performance
+   STRUCTURED_OUTPUTS = "off"
+   MAX_ANSWER_TOKENS = "1500"
+   EMBED_KEEPALIVE_SECONDS = "120"
+   WARMUP_ON_STARTUP = "true"
+   ```
+
+4. **Deploy**: Click "Deploy" and wait for the app to start
+
+5. **Access**: Your app will be available at `https://your-app-name.streamlit.app`
+
+### Important Notes
+- The app runs both FastAPI backend and Streamlit frontend in a single process
+- Backend starts automatically on port 8000
+- First startup may take 10-15 seconds as services initialize
+- Free tier has resource limitations - consider upgrading for production use
+
 ## 📚 Documentation
 
 - [Azure Setup Guide](use-case-1-document-qa/AZURE_SETUP_GUIDE.md)
