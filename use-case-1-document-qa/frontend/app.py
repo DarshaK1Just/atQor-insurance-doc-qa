@@ -1,29 +1,35 @@
 """Streamlit UI — Insurance Document Intelligence.
 
-A grounded document-Q&A workspace, modelled as a two-stage flow the user can
-always follow:
+A grounded document-Q&A workspace built as a real product shell, not a script:
 
-    1 · Add documents   →   we extract + index them   →   2 · Ask in plain English
-                                                            →   cited, page-level answers
+    Sidebar (control panel)            Main (conversation surface)
+    ───────────────────────            ───────────────────────────
+    · brand + grounded-RAG mark        · one compact hero / welcome
+    · upload + load demo               · suggestion cards (Material icons)
+    · live corpus list                 · grounded, cited chat thread
+    · system-status card               · agentic trace per turn
+    · tech footer                      · light, pinned chat input
 
-Design decisions (and the bugs they replace):
+Design language is shared with the Plum Claims console (same Inter + violet
+token system) so the two apps read as one product family.
 
-* THEME IS LOCKED.  `.streamlit/config.toml` pins base="light" so Streamlit's own
-  chrome matches this CSS.  Previously the light card design rendered on a dark
-  inherited theme, which is what made the corpus cards look broken/noisy.
+Key engineering decisions (and the bugs they retire):
 
-* ZERO FLICKER.  The corpus list lives in an `@st.fragment` that auto-polls with
-  `run_every` *only while ingestion is in flight*, and reruns ITSELF — never the
-  whole page.  The old code did `time.sleep(1.5)` + a bare `st.rerun()` (app
-  scope) which re-executed and repainted the entire page every 1.5 s.
+* APP SHELL, NOT A SPLIT PAGE.  Documents live in Streamlit's real sidebar; the
+  main column is a single chat surface.  This is what makes it feel like an app
+  instead of two competing panels.
 
-* NO RAW HTML LEAKS.  All markup goes through `html()`, which `dedent`s + strips
-  so the first line sits at column 0.  The old indented f-strings were
-  intermittently parsed as Markdown *code blocks*, printing literal `</div>`.
+* ZERO-FLICKER CORPUS.  The corpus renders as ONE html injection inside an
+  `@st.fragment` that auto-polls with `run_every` *only while ingestion is in
+  flight* and reruns ITSELF — never the whole page.  The old code painted ~15
+  separate markdown blocks inside a height-container every poll, which flashed.
 
-* GUIDED & GATED.  Chat is disabled until at least one document is "ready", with
-  state-aware empty screens (cold start → indexing → ready) so the user is never
-  staring at an input that can't help them yet.
+* CHAT INPUT IS ALWAYS LIGHT.  Selectors target Streamlit 1.58's actual chat-input
+  DOM and force every inner baseweb wrapper transparent, so the dark fill that
+  bled through before can't appear.
+
+* NO RAW HTML LEAKS.  All markup goes through `html()`, which dedents + strips so
+  the first line sits at column 0 and Markdown never treats it as a code block.
 
 The UI talks only to the FastAPI backend. No Azure SDK calls here."""
 from __future__ import annotations
@@ -53,326 +59,237 @@ STAGE_LABEL = {
     "ready": "Ready",
     "failed": "Failed",
 }
+# (material icon, category, question) — icons render via Streamlit's :material/: syntax.
 SUGGESTED_QUESTIONS = [
-    ("📋", "Coverage lookup",
+    (":material/verified_user:", "Coverage lookup",
      "What is the maximum coverage for outpatient treatment under the Gold Shield policy?"),
-    ("🧾", "Claim-form facts",
+    (":material/receipt_long:", "Claim-form facts",
      "What is the claim amount and the date of service on the uploaded claim form?"),
-    ("🔁", "Follow-up reasoning",
+    (":material/forum:", "Follow-up reasoning",
      "What is the Gold Shield deductible?"),
-    ("⚖️", "Cross-document comparison",
+    (":material/compare_arrows:", "Cross-document comparison",
      "Compare the deductible clauses across all uploaded policies."),
 ]
 
-st.set_page_config(
-    page_title="Insurance Document Intelligence",
-    page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed",
+# Inline shield mark — crisper than an emoji inside the brand square.
+SHIELD_SVG = (
+    '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
+    '<path d="m9 12 2 2 4-4"/></svg>'
 )
 
-# ── Visual system (single CSS injection, light enterprise theme) ──────────────
+st.set_page_config(
+    page_title="Insurance Document Intelligence",
+    page_icon="🛡️", layout="wide", initial_sidebar_state="expanded",
+)
+
+# ════════════════════════════════════════════════════════════ design system
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-:root {
-    --brand:#0A1F44; --brand-2:#15336B; --brand-3:#1E4A8A;
-    --accent:#4F6BED; --accent-2:#6E8BF4; --violet:#7C5CFC; --teal:#0E8E8E;
-    --ink:#0B1220; --ink-2:#475569; --ink-3:#8A97A8;
-    --line:#E6EAF1; --line-2:#EFF2F7; --bg:#F4F6FB; --card:#FFFFFF;
-    --ok:#15A34A; --ok-bg:#ECFDF5; --ok-br:#A7F3D0;
-    --warn:#D97706; --warn-bg:#FFFBEB; --warn-br:#FDE68A;
-    --err:#DC2626;  --err-bg:#FEF2F2;  --err-br:#FECACA;
-    --ring: rgba(79,107,237,.28);
-    --shadow-sm: 0 1px 2px rgba(11,18,32,.04), 0 1px 3px rgba(11,18,32,.06);
-    --shadow-md: 0 6px 18px rgba(11,18,32,.07), 0 16px 40px rgba(11,18,32,.07);
-    --shadow-brand: 0 10px 30px rgba(10,31,68,.28);
+:root{
+  --violet:#6D28D9; --violet-2:#7C3AED; --violet-3:#5B21B6; --indigo:#4F46E5;
+  --ink:#1E1B2E; --ink-2:#5B5772; --ink-3:#8B86A3; --ink-4:#A8A3BC;
+  --line:#ECE9F4; --line-2:#E9E7F3; --bg:#F6F7FB; --card:#FFFFFF; --soft:#F8F7FD;
+  --ok:#10B981; --ok-ink:#15803D; --ok-bg:#ECFDF5; --ok-br:#A7F3D0;
+  --warn:#F59E0B; --warn-ink:#B45309; --warn-bg:#FFFBEB; --warn-br:#FDE68A;
+  --err:#EF4444; --err-ink:#B91C1C; --err-bg:#FEF2F2; --err-br:#FECACA;
+  --info:#3B82F6;
+  --ring:rgba(124,58,237,.20);
+  --shadow-sm:0 1px 6px rgba(16,24,40,.05);
+  --shadow-md:0 10px 30px rgba(76,29,149,.10);
+  --shadow-hero:0 14px 38px rgba(76,29,149,.30);
 }
+html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--ink); }
+.stApp { background:var(--bg); }
 
-html, body, [class*="css"] {
-    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-    color: var(--ink);
-}
-/* Soft, premium canvas — a barely-there cool gradient instead of flat grey. */
-.stApp {
-    background:
-        radial-gradient(1100px 480px at 88% -8%, rgba(79,107,237,.07), transparent 60%),
-        radial-gradient(900px 420px at 0% 0%, rgba(124,92,252,.05), transparent 55%),
-        var(--bg);
-}
+/* tighten the page rhythm, kill the top gap, hide dev chrome */
+[data-testid="stHeader"]{ background:transparent; height:0; }
+#MainMenu, footer { visibility:hidden; height:0; }
+.block-container{ padding-top:1.1rem !important; padding-bottom:7rem !important; max-width:1180px; }
+[data-testid="stToolbar"]{ right:1rem; }
+[data-testid="stVerticalBlock"]{ gap:.7rem; }
 
-/* Tight, deliberate page rhythm — kills the big empty gap under the header. */
-.block-container {
-    padding-top: .75rem !important;
-    padding-bottom: 7rem !important;
-    max-width: 1500px;
-}
-/* Calm, consistent vertical spacing between stacked blocks. */
-[data-testid="stVerticalBlock"] { gap: .7rem; }
-[data-testid="column"] [data-testid="stVerticalBlock"] { gap: .55rem; }
+/* shared micro-label (uppercase eyebrow) */
+.microlabel{ font-size:.7rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--ink-4); margin:.2rem .1rem .35rem; }
+.section-title{ font-size:1.05rem; font-weight:800; color:var(--ink); margin:.2rem 0 .35rem; letter-spacing:-.01em; }
+.section-sub{ color:var(--ink-2); font-size:.86rem; margin:-.2rem 0 .7rem; line-height:1.45; }
 
-/* Hide Streamlit default chrome. */
-#MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
+/* ───────────────────────── sidebar (app shell) ───────────────────────── */
+[data-testid="stSidebar"]{ background:#fff; border-right:1px solid var(--line-2); }
+[data-testid="stSidebar"] .block-container{ padding-top:1.1rem; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap:.55rem; }
+.brand{ display:flex; align-items:center; gap:.65rem; padding:.1rem .1rem .35rem; }
+.brand-logo{ width:42px; height:42px; border-radius:12px; flex:0 0 42px; display:grid; place-items:center;
+  background:linear-gradient(135deg,var(--violet-2),var(--indigo));
+  box-shadow:0 6px 16px rgba(109,40,217,.35), inset 0 1px 0 rgba(255,255,255,.3); }
+.brand-name{ font-weight:800; font-size:1.06rem; color:var(--ink); line-height:1.05; letter-spacing:-.01em; }
+.brand-sub{ font-size:.66rem; color:var(--ink-3); letter-spacing:.14em; margin-top:.22rem; text-transform:uppercase; font-weight:700; }
 
-/* ── Top bar (enterprise header with depth) ─────────────────────────────────── */
-.topbar {
-    position:relative; overflow:hidden;
-    display:flex; align-items:center; gap:16px; padding:20px 26px;
-    background:
-        radial-gradient(680px 220px at 82% -40%, rgba(124,92,252,.45), transparent 70%),
-        radial-gradient(520px 200px at 12% 140%, rgba(79,107,237,.40), transparent 70%),
-        linear-gradient(118deg, #081A3A 0%, var(--brand) 42%, var(--brand-2) 78%, var(--brand-3) 100%);
-    border-radius:20px; color:#fff; margin-bottom:18px;
-    box-shadow: var(--shadow-brand);
-    border:1px solid rgba(255,255,255,.08);
-}
-/* hairline top highlight for a glassy, premium edge */
-.topbar::before {
-    content:""; position:absolute; inset:0; border-radius:20px; pointer-events:none;
-    background:linear-gradient(180deg, rgba(255,255,255,.10), transparent 36%);
-}
-.topbar .mark {
-    width:48px; height:48px; border-radius:14px; display:grid; place-items:center;
-    font-size:25px; flex-shrink:0;
-    background:linear-gradient(150deg, rgba(255,255,255,.22), rgba(255,255,255,.06));
-    border:1px solid rgba(255,255,255,.28);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 16px rgba(0,0,0,.22);
-}
-.topbar .btitle { display:flex; align-items:center; gap:10px; }
-.topbar h1 { color:#fff; font-size:20px; font-weight:800; margin:0; letter-spacing:-.02em; }
-.topbar .kicker {
-    font-size:9.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase;
-    color:#A8C0E8; padding:3px 8px; border-radius:6px;
-    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12);
-}
-.topbar .sub { color:#AFC2E0; font-size:12.5px; margin-top:4px; font-weight:450; letter-spacing:.005em; }
-.topbar .right { margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-.pill {
-    display:inline-flex; align-items:center; gap:7px; padding:7px 13px; border-radius:999px;
-    font-size:12px; font-weight:600; background:rgba(255,255,255,.10); color:#EAF0FA;
-    border:1px solid rgba(255,255,255,.16); backdrop-filter: blur(8px);
-}
-.pill.ok  { background:rgba(22,163,74,.24);  border-color:rgba(74,222,128,.45); color:#D7FBE4; }
-.pill.warn{ background:rgba(217,119,6,.30);  border-color:rgba(251,191,36,.45); color:#FDE7C2; }
-.pill.err { background:rgba(220,38,38,.28);  border-color:rgba(248,113,113,.45); color:#FEDada; }
-.pill .dot{ width:7px; height:7px; border-radius:50%; }
-.pill.ok .dot  { background:#4ADE80; box-shadow:0 0 8px #4ADE80; animation:pulse 2s ease-in-out infinite; }
-.pill.warn .dot{ background:#FBBF24; }
-.pill.err .dot { background:#F87171; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+/* upload zone */
+[data-testid="stFileUploaderDropzone"]{
+  background:linear-gradient(180deg,#fff,#FAF9FE); border:1.5px dashed #D6CFEC !important;
+  border-radius:12px !important; padding:12px 14px !important; transition:border-color .18s, background .18s; }
+[data-testid="stFileUploaderDropzone"]:hover{ border-color:var(--violet-2) !important;
+  background:linear-gradient(180deg,#fff,#F3EFFC); }
+[data-testid="stFileUploaderDropzone"] button{
+  background:linear-gradient(135deg,var(--violet-3),var(--violet-2)) !important; color:#fff !important;
+  border:none !important; border-radius:9px !important; font-weight:600 !important;
+  box-shadow:0 2px 8px rgba(109,40,217,.25); transition:filter .15s, transform .15s; }
+[data-testid="stFileUploaderDropzone"] button:hover{ filter:brightness(1.07); transform:translateY(-1px); color:#fff !important; }
 
-/* ── Panel headers (the numbered flow: 1 add docs · 2 ask) ─────────────────── */
-.phead { display:flex; align-items:center; gap:10px; margin:2px 0 10px 0; }
-.phead .step {
-    width:24px; height:24px; border-radius:8px; display:grid; place-items:center;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color:#fff;
-    font-size:13px; font-weight:700; box-shadow:0 2px 6px rgba(79,107,237,.35);
-}
-.phead .t { font-size:14px; font-weight:700; color:var(--ink); letter-spacing:-.01em; }
-.phead .h { font-size:12px; color:var(--ink-3); margin-left:auto; font-weight:500; }
+/* corpus list — single injection, scrolls internally */
+.corpus-head{ display:flex; align-items:baseline; justify-content:space-between; margin:.5rem .1rem .25rem; }
+.corpus-head .ct{ font-size:.7rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); }
+.corpus-head .cs{ font-size:.72rem; color:var(--ink-3); font-weight:500; }
+.corpus{ display:flex; flex-direction:column; gap:.5rem; max-height:42vh; overflow-y:auto;
+  padding:.1rem .15rem .2rem 0; margin-right:-.15rem; }
+.corpus::-webkit-scrollbar{ width:7px; }
+.corpus::-webkit-scrollbar-thumb{ background:#DAD4EC; border-radius:8px; }
+.corpus::-webkit-scrollbar-thumb:hover{ background:#C4BCE0; }
+.doc{ background:#fff; border:1px solid var(--line); border-left:3px solid var(--line);
+  border-radius:11px; padding:.6rem .7rem; box-shadow:var(--shadow-sm); }
+.doc.ready{ border-left-color:var(--ok); } .doc.failed{ border-left-color:var(--err); }
+.doc.proc{ border-left-color:var(--violet-2); }
+.doc-top{ display:flex; align-items:center; gap:.4rem; }
+.doc-name{ flex:1; min-width:0; font-weight:600; font-size:.82rem; color:var(--ink);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tag{ font-size:.58rem; font-weight:700; letter-spacing:.04em; padding:.13rem .42rem; border-radius:6px;
+  text-transform:uppercase; white-space:nowrap; flex:0 0 auto;
+  background:#EDE9FE; color:var(--violet); }
+.tag.ok{ background:var(--ok-bg); color:var(--ok-ink); } .tag.err{ background:var(--err-bg); color:var(--err-ink); }
+.tag.proc{ background:#EDE9FE; color:var(--violet); }
+.d-meta{ font-size:.72rem; color:var(--ink-3); margin-top:.4rem; }
+.d-stage{ font-size:.7rem; color:var(--ink-2); margin-top:.35rem; font-weight:500; }
+.d-fail{ font-size:.72rem; color:var(--err-ink); margin-top:.4rem; }
+.bar{ height:5px; background:#EEE9F8; border-radius:99px; overflow:hidden; margin-top:.45rem; }
+.bar>div{ height:100%; border-radius:99px; background:linear-gradient(90deg,var(--violet-2),var(--indigo));
+  transition:width .5s ease; }
+.bar.active>div{ background-size:200% 100%; animation:shimmer 1.5s linear infinite;
+  background-image:linear-gradient(90deg,var(--violet-2),var(--indigo),var(--violet-2)); }
+@keyframes shimmer{ from{background-position:200% 0} to{background-position:0 0} }
 
-/* ── Document cards ────────────────────────────────────────────────────────── */
-.doc {
-    background:var(--card); border:1px solid var(--line); border-radius:13px;
-    padding:13px 15px; box-shadow:var(--shadow-sm); transition:border-color .2s, box-shadow .2s;
-}
-.doc:hover { border-color:#D5DCEA; box-shadow:var(--shadow-md); }
-.doc.ready  { border-left:3px solid var(--ok); }
-.doc.failed { border-left:3px solid var(--err); }
-.doc.proc   { border-left:3px solid var(--accent); }
-.doc-top { display:flex; align-items:center; gap:8px; }
-.doc-name {
-    flex:1; min-width:0; font-weight:600; font-size:13.5px; color:var(--ink);
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;   /* no overflow past the card edge */
-}
-.doc-tags { display:flex; gap:5px; flex-shrink:0; }
-.tag {
-    font-size:10px; font-weight:600; padding:3px 8px; border-radius:999px; letter-spacing:.02em;
-    background:#EEF2FF; color:var(--brand-2); border:1px solid #DBE3FF; text-transform:capitalize;
-}
-.tag.ok  { background:var(--ok-bg);  color:var(--ok);  border-color:var(--ok-br); }
-.tag.err { background:var(--err-bg); color:var(--err); border-color:var(--err-br); }
-.tag.proc{ background:#EFF6FF; color:var(--accent); border-color:#BFD3FF; }
-.d-meta  { font-size:11.5px; color:var(--ink-3); margin-top:7px; }
-.d-stage { font-size:11px; color:var(--ink-2); margin-top:6px; font-weight:500; }
-.d-fail  { font-size:11.5px; color:var(--err); margin-top:7px; }
-.bar { height:5px; background:#EAEFF6; border-radius:99px; overflow:hidden; margin-top:9px; }
-.bar > div {
-    height:100%; border-radius:99px; transition:width .5s ease;
-    background:linear-gradient(90deg, var(--accent), var(--teal));
-}
-.bar.active > div {
-    background-size:200% 100%; animation:shimmer 1.5s linear infinite;
-    background-image:linear-gradient(90deg, var(--accent), var(--teal), var(--accent));
-}
-@keyframes shimmer { from{background-position:200% 0} to{background-position:0 0} }
+/* status card */
+.status-card{ background:var(--soft); border:1px solid var(--line); border-radius:13px;
+  padding:.8rem .9rem; margin-top:.6rem; }
+.status-row{ display:flex; align-items:center; gap:.5rem; font-size:.78rem; color:var(--ink-2); margin:.28rem 0; }
+.status-row b{ color:var(--ink); font-weight:600; }
+.dot{ width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
+.dot-on{ background:var(--ok); box-shadow:0 0 7px rgba(16,185,129,.6); }
+.dot-warn{ background:var(--warn); } .dot-off{ background:#94A3B8; }
+.mono{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; }
+.tech-foot{ color:var(--ink-4); font-size:.68rem; margin-top:.8rem; line-height:1.5; }
 
-/* ── File uploader ─────────────────────────────────────────────────────────── */
-[data-testid="stFileUploaderDropzone"] {
-    background:linear-gradient(180deg,#FFFFFF,#F7F9FF);
-    border:1.5px dashed #C7D2E6 !important; border-radius:13px !important;
-    transition:border-color .2s, background .2s; padding:14px 16px !important;
-}
-[data-testid="stFileUploaderDropzone"]:hover {
-    border-color:var(--accent) !important; background:linear-gradient(180deg,#FFFFFF,#EEF2FF);
-}
-/* The "Browse files" / upload button — branded, with a darken (never white) hover. */
-[data-testid="stFileUploaderDropzone"] button {
-    background:linear-gradient(135deg, var(--brand-2), var(--accent)) !important;
-    color:#fff !important; border:none !important; border-radius:10px !important;
-    font-weight:600 !important; box-shadow:0 2px 8px rgba(79,107,237,.28);
-    transition:filter .15s, box-shadow .15s, transform .15s;
-}
-[data-testid="stFileUploaderDropzone"] button:hover {
-    filter:brightness(1.07); color:#fff !important; transform:translateY(-1px);
-    box-shadow:0 6px 16px rgba(79,107,237,.40); border:none !important;
-}
-[data-testid="stFileUploaderDropzone"] button:active { transform:translateY(0); }
+/* ───────────────────────── buttons ───────────────────────── */
+.stButton button{ font-weight:600; border-radius:11px; border:1px solid var(--line);
+  background:#fff; color:var(--ink); transition:all .15s; }
+.stButton button:hover{ border-color:var(--violet-2); color:var(--violet); }
+.stButton button[kind="primary"]{ background:linear-gradient(135deg,var(--violet-2),var(--indigo));
+  color:#fff; border:none; box-shadow:0 4px 12px rgba(91,33,182,.26); }
+.stButton button[kind="primary"]:hover{ transform:translateY(-1px); color:#fff;
+  box-shadow:0 8px 20px rgba(91,33,182,.34); }
+/* sidebar buttons full-bleed and calm */
+[data-testid="stSidebar"] .stButton button{ text-align:left; justify-content:flex-start; }
 
-/* ── Buttons ───────────────────────────────────────────────────────────────── */
-.stButton button {
-    font-weight:600; border-radius:11px; border:1px solid var(--line);
-    background:var(--card); color:var(--ink); transition:all .15s; text-align:left;
-}
-.stButton button:hover { border-color:var(--accent); color:var(--brand-2); }
-.stButton button[kind="primary"] {
-    background:linear-gradient(135deg, var(--accent), var(--accent-2)); color:#fff; border:none;
-    box-shadow:0 2px 8px rgba(79,107,237,.3);
-}
-.stButton button[kind="primary"]:hover {
-    transform:translateY(-1px); box-shadow:0 6px 18px rgba(79,107,237,.4); color:#fff;
-}
+/* ───────────────────────── hero ───────────────────────── */
+.hero{ border-radius:18px; padding:1.5rem 1.7rem; color:#fff; margin-bottom:1rem;
+  background:radial-gradient(1100px 380px at 0% 0%, var(--violet-2) 0%, var(--violet-3) 48%, #3B1E78 100%);
+  box-shadow:var(--shadow-hero); position:relative; overflow:hidden; }
+.hero::before{ content:""; position:absolute; inset:0;
+  background:linear-gradient(180deg,rgba(255,255,255,.10),transparent 38%); pointer-events:none; }
+.hero .eyebrow{ display:inline-block; font-size:.68rem; font-weight:700; letter-spacing:.12em;
+  text-transform:uppercase; color:#E9E2FF; background:rgba(255,255,255,.14);
+  border:1px solid rgba(255,255,255,.22); padding:.25rem .6rem; border-radius:999px; margin-bottom:.7rem; }
+.hero h1{ font-size:1.55rem; font-weight:800; margin:0 0 .4rem; letter-spacing:-.02em; line-height:1.14; color:#fff; }
+.hero p{ font-size:.92rem; color:#E9E2FF; margin:0; max-width:680px; line-height:1.5; }
+.hero p strong{ color:#fff; }
+.hero-chips{ display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.9rem; }
+.hero-chip{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.24);
+  padding:.28rem .65rem; border-radius:999px; font-size:.72rem; font-weight:600; color:#fff;
+  display:inline-flex; align-items:center; gap:.35rem; }
 
-/* ── Empty / state hero ────────────────────────────────────────────────────── */
-.hero {
-    border:1px solid var(--line); border-radius:18px; padding:30px 30px 26px;
-    background:linear-gradient(180deg,#FFFFFF 0%, #F1F5FF 100%); box-shadow:var(--shadow-md);
-}
-.hero .eyebrow {
-    display:inline-block; font-size:11px; font-weight:700; letter-spacing:.1em;
-    color:var(--accent); background:#EEF2FF; border:1px solid #DBE3FF;
-    padding:4px 11px; border-radius:99px; text-transform:uppercase; margin-bottom:12px;
-}
-.hero h2 { color:var(--ink); font-size:23px; margin:0 0 8px; font-weight:800; letter-spacing:-.02em; }
-.hero p  { color:var(--ink-2); font-size:14px; max-width:600px; margin:0; line-height:1.55; }
+/* ───────────────────────── pipeline strip (how it works) ───────────────────────── */
+.pipe{ display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:.1rem 0 .3rem; }
+.pstep{ flex:1 1 0; min-width:130px; background:#fff; border:1px solid var(--line); border-radius:11px;
+  padding:.6rem .75rem; box-shadow:var(--shadow-sm); }
+.pstep .pn{ font-size:.86rem; font-weight:700; color:var(--ink); display:flex; align-items:center; gap:.4rem; }
+.pstep .pi{ width:9px; height:9px; border-radius:50%;
+  background:linear-gradient(135deg,var(--violet-2),var(--indigo)); display:inline-block; }
+.pstep .pd{ font-size:.72rem; color:var(--ink-3); margin-top:.25rem; line-height:1.4; }
+.parrow{ display:flex; align-items:center; color:#CFC8E4; font-size:1.1rem; padding:0 .25rem; }
 
-/* 3-step "how it works" strip */
-.steps { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:20px; }
-.step-c {
-    background:#fff; border:1px solid var(--line); border-radius:13px; padding:15px 16px;
-    box-shadow:var(--shadow-sm);
-}
-.step-c .n {
-    width:26px; height:26px; border-radius:8px; display:grid; place-items:center; font-weight:700;
-    font-size:13px; color:#fff; background:linear-gradient(135deg,var(--brand),var(--accent)); margin-bottom:9px;
-}
-.step-c .n { transition:transform .15s; }
-.step-c:hover { border-color:#D5DCEA; box-shadow:var(--shadow-md); }
-.step-c .st-t { font-size:13.5px; font-weight:700; color:var(--ink); }
-.step-c .st-d { font-size:12px; color:var(--ink-2); margin-top:3px; line-height:1.45; }
-.hintbar {
-    margin-top:16px; padding:12px 16px; border-radius:12px; font-size:13px; color:var(--ink-2);
-    background:linear-gradient(90deg,#EEF2FF,#F5F7FF); border:1px solid #DCE3F7;
-    display:flex; align-items:center; gap:8px;
-}
-.hintbar::before { content:"←"; font-weight:800; color:var(--accent); font-size:15px; }
+/* generic note / state panels */
+.note{ border:1px solid var(--line); border-radius:14px; padding:1.4rem 1.5rem; background:#fff; box-shadow:var(--shadow-sm); }
+.note.center{ text-align:center; }
+.note h3{ font-size:1rem; font-weight:700; color:var(--ink); margin:0 0 .35rem; }
+.note p{ font-size:.86rem; color:var(--ink-2); margin:0; line-height:1.5; }
+.note.err-panel{ border-color:var(--err-br); background:var(--err-bg); }
+.note.err-panel h3{ color:var(--err-ink); }
+.note code{ background:#F1EFF8; padding:.1rem .35rem; border-radius:5px; font-size:.8rem; color:var(--violet-3); }
+.spinner{ width:30px; height:30px; margin:0 auto; border-radius:50%;
+  border:3px solid #ECE6F8; border-top-color:var(--violet-2); animation:spin .9s linear infinite; }
+@keyframes spin{ from{transform:rotate(0)} to{transform:rotate(360deg)} }
 
-/* generic info panel (indexing / offline states) */
-.note {
-    border:1px solid var(--line); border-radius:14px; padding:22px 24px; background:#fff;
-    box-shadow:var(--shadow-sm);
-}
-.note.center { text-align:center; }
-.note h3 { font-size:16px; font-weight:700; color:var(--ink); margin:0 0 6px; }
-.note p  { font-size:13px; color:var(--ink-2); margin:0; line-height:1.5; }
-.note.err-panel { border-color:var(--err-br); background:var(--err-bg); }
-.note.err-panel h3 { color:var(--err); }
-.spinner {
-    width:30px; height:30px; margin:0 auto; border-radius:50%;
-    border:3px solid #E3E9F7; border-top-color:var(--accent);
-    animation:spin 0.9s linear infinite;
-}
+/* ───────────────────────── agentic trace ───────────────────────── */
+.trace{ display:flex; flex-direction:column; gap:.5rem; padding:.8rem .95rem; background:var(--soft);
+  border:1px solid var(--line); border-radius:12px; margin-bottom:.4rem; }
+.trace .row{ display:flex; gap:.6rem; align-items:center; font-size:.84rem; color:var(--ink-3); }
+.trace .row.done{ color:var(--ok-ink); } .trace .row.active{ color:var(--violet); font-weight:600; }
+.trace .ic{ width:18px; text-align:center; }
+.trace .note-r{ font-size:.72rem; color:var(--ink-3); margin-left:auto; font-weight:500; }
+.trace .row.active .ic{ animation:spin 1.1s linear infinite; display:inline-block; }
 
-/* ── Agentic trace ─────────────────────────────────────────────────────────── */
-.trace {
-    display:flex; flex-direction:column; gap:9px; padding:14px 16px; background:#F4F7FE;
-    border:1px solid #E3E9F7; border-radius:13px; margin-bottom:6px;
-}
-.trace .row { display:flex; gap:10px; align-items:center; font-size:13px; color:var(--ink-3); }
-.trace .row.done   { color:var(--ok); }
-.trace .row.active { color:var(--brand-2); font-weight:600; }
-.trace .ic { width:18px; text-align:center; }
-.trace .note-r { font-size:11px; color:var(--ink-3); margin-left:auto; font-weight:500; }
-.trace .row.active .ic { animation:spin 1.1s linear infinite; display:inline-block; }
-@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
-
-/* ── Chat bubbles ──────────────────────────────────────────────────────────── */
-[data-testid="stChatMessage"] {
-    background:var(--card); border:1px solid var(--line); border-radius:14px;
-    padding:14px 18px !important; box-shadow:var(--shadow-sm); margin-bottom:2px;
-}
+/* ───────────────────────── chat bubbles ───────────────────────── */
+[data-testid="stChatMessage"]{ background:#fff; border:1px solid var(--line); border-radius:14px;
+  padding:.95rem 1.15rem !important; box-shadow:var(--shadow-sm); margin-bottom:.2rem; }
 [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarCustom"],
-[data-testid="stChatMessage"] > div:first-child > div:first-child {
-    background:linear-gradient(135deg, var(--brand), var(--accent)) !important; color:#fff !important;
-}
-/* ── Chat input — force light; disabled = soft grey, never dark ────────────── */
-[data-testid="stBottom"], [data-testid="stBottomBlockContainer"] { background:transparent !important; }
-[data-testid="stChatInput"] {
-    background:var(--card) !important; border:1px solid var(--line) !important;
-    border-radius:14px !important; box-shadow:var(--shadow-sm);
-    transition:border-color .15s, box-shadow .15s;
-}
-[data-testid="stChatInput"]:focus-within {
-    border-color:var(--accent) !important; box-shadow:0 0 0 3px var(--ring);
-}
-[data-testid="stChatInput"] > div, [data-testid="stChatInput"] textarea {
-    background:transparent !important;
-}
-[data-testid="stChatInput"] textarea { font-size:15px !important; color:var(--ink) !important; }
-[data-testid="stChatInput"] textarea::placeholder { color:var(--ink-3) !important; opacity:1; }
-/* disabled state — light grey with muted text, not the default dark fill */
-[data-testid="stChatInput"]:has(textarea:disabled) {
-    background:#EEF1F7 !important; border-style:dashed !important; box-shadow:none;
-}
-[data-testid="stChatInput"] textarea:disabled {
-    color:var(--ink-3) !important; -webkit-text-fill-color:var(--ink-3) !important;
-}
-[data-testid="stChatInput"] button { color:var(--accent) !important; }
+[data-testid="stChatMessage"] [data-testid="stChatMessageAvatarUser"],
+[data-testid="stChatMessage"] [data-testid="stChatMessageAvatarAssistant"]{
+  background:linear-gradient(135deg,var(--violet-2),var(--indigo)) !important; color:#fff !important; border:none; }
 
-/* ── Scrollable corpus rail — fixed height so many docs never blow up the page ── */
-.corpus-scroll [data-testid="stVerticalBlockBorderWrapper"] { background:transparent; }
-[data-testid="stVerticalBlock"]::-webkit-scrollbar { width:8px; }
-[data-testid="stVerticalBlock"]::-webkit-scrollbar-thumb { background:#D3DAE8; border-radius:8px; }
-[data-testid="stVerticalBlock"]::-webkit-scrollbar-thumb:hover { background:#B9C3D8; }
+/* ───────────────────────── chat input — force light, never dark ───────────────────────── */
+[data-testid="stBottom"], [data-testid="stBottomBlockContainer"]{ background:transparent !important; }
+[data-testid="stChatInput"]{ background:var(--card) !important; border:1px solid var(--line) !important;
+  border-radius:14px !important; box-shadow:var(--shadow-sm); transition:border-color .15s, box-shadow .15s; }
+[data-testid="stChatInput"]:focus-within{ border-color:var(--violet-2) !important; box-shadow:0 0 0 3px var(--ring); }
+/* every inner baseweb wrapper transparent so the container white always wins */
+[data-testid="stChatInput"] *{ background:transparent !important; }
+[data-testid="stChatInput"] textarea, [data-testid="stChatInputTextArea"]{
+  color:var(--ink) !important; -webkit-text-fill-color:var(--ink) !important; font-size:15px !important; }
+[data-testid="stChatInput"] textarea::placeholder, [data-testid="stChatInputTextArea"]::placeholder{
+  color:var(--ink-3) !important; opacity:1; }
+[data-testid="stChatInput"] button{ color:var(--violet) !important; }
+[data-testid="stChatInput"]:has(textarea:disabled){ background:#F1EFF8 !important; border-style:dashed !important; box-shadow:none; }
+[data-testid="stChatInput"] textarea:disabled, [data-testid="stChatInputTextArea"]:disabled{
+  color:var(--ink-3) !important; -webkit-text-fill-color:var(--ink-3) !important; }
 
-/* ── Answer meta + citations ───────────────────────────────────────────────── */
-.ans-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:12px;
-    padding-top:11px; border-top:1px dashed var(--line); }
-.chip {
-    font-size:11px; font-weight:600; padding:3px 9px; border-radius:99px;
-    background:#F1F5F9; color:var(--ink-2); border:1px solid var(--line);
-}
-.chip.conf-high { background:var(--ok-bg);   color:var(--ok);   border-color:var(--ok-br); }
-.chip.conf-medium{ background:var(--warn-bg); color:var(--warn); border-color:var(--warn-br); }
-.chip.conf-low  { background:var(--err-bg);  color:var(--err);  border-color:var(--err-br); }
-.chip.intent    { background:#E0F2FE; color:#075985; border-color:#BAE6FD; }
-.chip.intent.comparison { background:#FEF3C7; color:#92400E; border-color:#FDE68A; }
-.chip.q { background:#fff; color:var(--ink-3); font-weight:500; max-width:420px;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.insuf {
-    font-size:13px; color:var(--warn); background:var(--warn-bg); border:1px solid var(--warn-br);
-    border-radius:10px; padding:9px 12px; margin-top:8px;
-}
-.cite-label { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
-    color:var(--ink-3); margin:10px 0 4px; }
+/* ───────────────────────── answer meta + citations ───────────────────────── */
+.cite-label{ font-size:.68rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--ink-3); margin:.7rem 0 .3rem; }
+.ans-foot{ display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; margin-top:.8rem;
+  padding-top:.7rem; border-top:1px dashed var(--line); }
+.chip{ font-size:.68rem; font-weight:600; padding:.2rem .55rem; border-radius:999px;
+  background:#F4F2FB; color:var(--ink-2); border:1px solid var(--line); }
+.chip.conf-high{ background:var(--ok-bg); color:var(--ok-ink); border-color:var(--ok-br); }
+.chip.conf-medium{ background:var(--warn-bg); color:var(--warn-ink); border-color:var(--warn-br); }
+.chip.conf-low{ background:var(--err-bg); color:var(--err-ink); border-color:var(--err-br); }
+.chip.intent{ background:#EDE9FE; color:var(--violet-3); border-color:#DDD6FE; }
+.chip.intent.comparison{ background:#FEF3C7; color:#92400E; border-color:#FDE68A; }
+.chip.q{ background:#fff; color:var(--ink-3); font-weight:500; max-width:420px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.insuf{ font-size:.84rem; color:var(--warn-ink); background:var(--warn-bg); border:1px solid var(--warn-br);
+  border-radius:10px; padding:.6rem .8rem; margin-top:.55rem; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════ helpers
 def html(markup: str) -> None:
-    """Render raw HTML safely. `dedent` + `strip` guarantees the first line is at
-    column 0, so Markdown never mistakes indented markup for a code block (the
-    bug that printed literal `</div>` on screen)."""
+    """Render raw HTML safely. `dedent` + `strip` guarantees the first line sits at
+    column 0, so Markdown never mistakes indented markup for a code block."""
     st.markdown(textwrap.dedent(markup).strip(), unsafe_allow_html=True)
 
 
@@ -389,7 +306,7 @@ _ss("pending_question", None)
 _ss("active_citation", None)
 
 
-# ── HTTP ────────────────────────────────────────────────────────────────────--
+# ════════════════════════════════════════════════════════════ HTTP
 def _get(path: str, **kw) -> Any:
     return requests.get(f"{API}{path}", timeout=kw.pop("timeout", 6), **kw)
 
@@ -438,37 +355,7 @@ def stream_chat(question: str) -> Iterator[tuple[str, dict]]:
                     yield event, {"raw": payload}
 
 
-# ── Top bar ─────────────────────────────────────────────────────────────────--
-def render_topbar(health: dict | None) -> None:
-    if health is None:
-        right = ('<span class="pill err"><span class="dot"></span>Backend offline</span>')
-    else:
-        services = health.get("services", {})
-        n_ok = sum(1 for v in services.values() if v)
-        n_all = len(services) or 1
-        cls = "ok" if n_ok == n_all else ("warn" if n_ok else "err")
-        model = escape(health.get("chat_model", ""))
-        right = (
-            (f'<span class="pill">🤖 {model}</span>' if model else "")
-            + f'<span class="pill">🪪 {st.session_state.session_id}</span>'
-            + f'<span class="pill {cls}"><span class="dot"></span>Azure {n_ok}/{n_all}</span>'
-        )
-    html(f"""
-    <div class="topbar">
-        <div class="mark">🛡️</div>
-        <div>
-            <div class="btitle">
-                <h1>Insurance Document Intelligence</h1>
-                <span class="kicker">Grounded&nbsp;RAG</span>
-            </div>
-            <div class="sub">Grounded, auditable answers from your policies, claims and medical records — every fact traced to its exact source page.</div>
-        </div>
-        <div class="right">{right}</div>
-    </div>
-    """)
-
-
-# ── Document cards ────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════ corpus cards
 def _bar_pct(status: str) -> int:
     try:
         return int((STAGE_ORDER.index(status) + 1) / len(STAGE_ORDER) * 100)
@@ -476,40 +363,75 @@ def _bar_pct(status: str) -> int:
         return 100
 
 
-def render_document_card(doc: dict) -> None:
+def document_card_html(doc: dict) -> str:
+    """Return ONE card's markup. All cards are concatenated into a single
+    injection so a poll repaints one element, not fifteen — no flicker."""
     status = doc.get("status", "uploaded")
     name = escape(doc.get("doc_name", "document"))
     doc_type = escape((doc.get("doc_type") or "").strip())
     pages, chunks = doc.get("pages") or 0, doc.get("chunks") or 0
 
     if status == "ready":
-        accent, badge = "ready", '<span class="tag ok">✓ Ready</span>'
+        accent, badge = "ready", '<span class="tag ok">Ready</span>'
         type_tag = f'<span class="tag">{doc_type}</span>' if doc_type else ""
         body = f'<div class="d-meta">{pages} pages · {chunks} searchable chunks</div>'
     elif status == "failed":
         accent, badge, type_tag = "failed", '<span class="tag err">Failed</span>', ""
-        body = f'<div class="d-fail">⚠ {escape(doc.get("detail") or "Processing failed")}</div>'
+        body = f'<div class="d-fail">{escape(doc.get("detail") or "Processing failed")}</div>'
     else:
         accent, badge, type_tag = "proc", '<span class="tag proc">Processing</span>', ""
         body = (f'<div class="bar active"><div style="width:{_bar_pct(status)}%"></div></div>'
                 f'<div class="d-stage">{STAGE_LABEL.get(status, status)}…</div>')
 
-    html(f"""
-    <div class="doc {accent}">
-        <div class="doc-top">
-            <div class="doc-name" title="{name}">{name}</div>
-            <div class="doc-tags">{type_tag}{badge}</div>
-        </div>
-        {body}
-    </div>
-    """)
+    return (f'<div class="doc {accent}"><div class="doc-top">'
+            f'<div class="doc-name" title="{name}">{name}</div>{type_tag}{badge}</div>{body}</div>')
 
 
-# ── Ingestion ─────────────────────────────────────────────────────────────────
+def corpus_panel_body() -> None:
+    """Render the live corpus as a single html injection. Decorated at call-time
+    with `run_every` so it re-runs *itself* (fragment scope) on a timer while
+    documents are processing, and stops the moment everything settles."""
+    docs = fetch_documents()
+    if docs is None:
+        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
+             '<p>Start the API (<code>uvicorn src.api.main:app</code>) on port 8000.</p></div>')
+        return
+    if not docs:
+        html('<div class="note center" style="padding:1.3rem .9rem;">'
+             '<div style="font-size:1.6rem;">🗂️</div>'
+             '<h3 style="margin-top:.5rem;font-size:.92rem;">Corpus is empty</h3>'
+             '<p style="font-size:.8rem;">Drop files above, or load the demo corpus.</p></div>')
+        return
+
+    ready = sum(1 for d in docs if d["status"] == "ready")
+    in_flight = [d for d in docs if d["status"] not in ("ready", "failed")]
+    failed = sum(1 for d in docs if d["status"] == "failed")
+    summary = f"{ready} ready"
+    if in_flight:
+        summary += f" · {len(in_flight)} processing"
+    if failed:
+        summary += f" · {failed} failed"
+
+    # Processing first, so the live action sits at the top of the rail.
+    order = {"uploaded": 0, "extracting": 0, "classifying": 0, "chunking": 0,
+             "indexing": 0, "failed": 1, "ready": 2}
+    ordered = sorted(docs, key=lambda d: order.get(d["status"], 0))
+    cards = "".join(document_card_html(d) for d in ordered)
+    html(f'<div class="corpus-head"><span class="ct">Corpus · {len(docs)}</span>'
+         f'<span class="cs">{summary}</span></div>'
+         f'<div class="corpus">{cards}</div>')
+
+    # When everything has settled, do exactly ONE app rerun so the chat gate and
+    # the polling interval recompute. After that the fragment stays calm.
+    if not in_flight and st.session_state.get("_corpus_polling"):
+        st.session_state["_corpus_polling"] = False
+        st.rerun()
+
+
+# ════════════════════════════════════════════════════════════ ingestion
 def auto_ingest(uploaded_files: list[Any] | None) -> bool:
     """POST newly-dropped files immediately (no Ingest button). Re-uploads of the
-    same (name, size) are skipped so a re-render never double-posts. Returns True
-    when something new was accepted, so the caller can refresh the view at once."""
+    same (name, size) are skipped so a re-render never double-posts."""
     if not uploaded_files or st.session_state.ingestion_lock:
         return False
     seen = st.session_state.uploaded_signatures
@@ -560,116 +482,7 @@ def load_demo_corpus() -> bool:
     return False
 
 
-# ── Corpus panel (fragment: polls only while ingestion is in flight) ──────────
-def corpus_panel_body() -> None:
-    """Render the live corpus list. Decorated at call-time with `run_every` so it
-    re-runs *itself* (fragment scope) on a timer while documents are processing,
-    and stops the moment everything settles — no full-page rerun, no flicker."""
-    docs = fetch_documents()
-    if docs is None:
-        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
-             '<p>Start the API (<code>uvicorn src.api.main:app</code>) and confirm it is '
-             'listening on port 8000.</p></div>')
-        return
-
-    if not docs:
-        html("""
-        <div class="note center" style="padding:28px 18px;">
-            <div style="font-size:30px;">📁</div>
-            <h3 style="margin-top:10px;">Your corpus is empty</h3>
-            <p>Add documents above, or load the demo corpus to explore the experience instantly.</p>
-        </div>
-        """)
-        return
-
-    ready = sum(1 for d in docs if d["status"] == "ready")
-    in_flight = [d for d in docs if d["status"] not in ("ready", "failed")]
-    failed = sum(1 for d in docs if d["status"] == "failed")
-
-    summary = f"{ready} ready"
-    if in_flight:
-        summary += f" · {len(in_flight)} processing"
-    if failed:
-        summary += f" · {failed} failed"
-    html(f'<div class="phead" style="margin:2px 0 6px;">'
-         f'<span class="t" style="font-size:12px;font-weight:700;letter-spacing:.04em;'
-         f'text-transform:uppercase;color:var(--ink-3);">Corpus · {len(docs)}</span>'
-         f'<span class="h">{summary}</span></div>')
-
-    # Processing first, so the live action is at the top of the list.
-    order = {"uploaded": 0, "extracting": 0, "classifying": 0, "chunking": 0,
-             "indexing": 0, "failed": 1, "ready": 2}
-    ordered = sorted(docs, key=lambda d: order.get(d["status"], 0))
-    # Fixed-height, internally-scrolling rail: a large corpus scrolls inside this
-    # box instead of stretching the whole page and leaving the chat side blank.
-    if len(ordered) > 4:
-        with st.container(height=460):
-            for doc in ordered:
-                render_document_card(doc)
-    else:
-        for doc in ordered:
-            render_document_card(doc)
-
-    # When everything has settled, do exactly ONE app rerun so the chat gate and
-    # the polling interval recompute. After that the fragment stays calm.
-    if not in_flight and st.session_state.get("_corpus_polling"):
-        st.session_state["_corpus_polling"] = False
-        st.rerun()
-
-
-# ── Onboarding / state-aware right panel ───────────────────────────────────────
-def render_steps_strip() -> None:
-    html("""
-    <div class="steps">
-        <div class="step-c"><div class="n">1</div><div class="st-t">Ingest</div>
-            <div class="st-d">Add policies, claim forms, scans or medical reports. Azure Document Intelligence extracts the layout automatically.</div></div>
-        <div class="step-c"><div class="n">2</div><div class="st-t">Index</div>
-            <div class="st-d">Content is classified, chunked by structure and embedded into a hybrid search index — progress streams live on the left.</div></div>
-        <div class="step-c"><div class="n">3</div><div class="st-t">Interrogate</div>
-            <div class="st-d">Ask in natural language. Every answer is grounded in your corpus and cited to the exact source page for audit.</div></div>
-    </div>
-    """)
-
-
-def render_cold_start() -> None:
-    html("""
-    <div class="hero">
-        <span class="eyebrow">Retrieval-augmented · grounded · auditable</span>
-        <h2>Turn dense insurance documents into precise, cited answers</h2>
-        <p>Upload your policies, claim forms and medical reports, then ask in plain English.
-        Every answer is grounded <strong>only</strong> in your own documents and traced to the
-        exact source page — so each fact can be verified in a single click.</p>
-    </div>
-    """)
-    render_steps_strip()
-    html('<div class="hintbar">Begin in the <strong>Your documents</strong> panel on the left — '
-         'drop your files, or load the demo corpus to explore instantly.</div>')
-
-
-def render_indexing_wait(in_flight: int) -> None:
-    plural = "s" if in_flight != 1 else ""
-    html(f"""
-    <div class="note center" style="padding:38px 24px;">
-        <div class="spinner"></div>
-        <h3 style="margin-top:14px;">Building your knowledge base</h3>
-        <p>Extracting, classifying and embedding {in_flight} document{plural}. Questions unlock
-        automatically the moment the first document is ready — live progress is on the left.</p>
-    </div>
-    """)
-
-
-def render_suggestions() -> None:
-    html('<div class="cite-label" style="margin-top:2px;">Start with a question</div>')
-    cols = st.columns(2)
-    for i, (icon, title, question) in enumerate(SUGGESTED_QUESTIONS):
-        with cols[i % 2]:
-            if st.button(f"{icon}  {title}\n\n{question}",
-                         key=f"sugg_{i}", use_container_width=True):
-                st.session_state.pending_question = question
-                st.rerun()
-
-
-# ── Citation modal ─────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════ citation modal
 @st.dialog("Source preview", width="large")
 def citation_dialog(c: dict) -> None:
     st.markdown(f"#### [{c['source_id']}] {c['doc_name']} · page {c['page']}")
@@ -690,7 +503,7 @@ def citation_dialog(c: dict) -> None:
         st.caption(f"{ext.upper()} preview not supported inline; use the link above.")
 
 
-# ── Chat rendering ─────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════ chat rendering
 TRACE_STAGES = [
     ("planning",   "Understanding your question"),
     ("retrieving", "Searching the document index"),
@@ -702,8 +515,6 @@ TRACE_STAGES = [
 def render_trace_html(state: dict[str, str]) -> str:
     rows = []
     for key, label in TRACE_STAGES:
-        # The agentic evidence-check only runs on simple-intent turns; hide the
-        # row entirely when it didn't fire (comparison mode / AGENTIC_RAG off).
         if key == "grading" and "grading" not in state:
             continue
         s = state.get(key, "pending")
@@ -722,7 +533,8 @@ def render_citation_chips(citations: list[dict], msg_idx: int) -> None:
     for i, c in enumerate(citations):
         with cols[i % len(cols)]:
             if st.button(f"[{c['source_id']}] {c['doc_name']} · p{c['page']}",
-                         key=f"cite_{msg_idx}_{i}", use_container_width=True):
+                         key=f"cite_{msg_idx}_{i}", icon=":material/description:",
+                         use_container_width=True):
                 st.session_state.active_citation = c
                 citation_dialog(c)
 
@@ -744,7 +556,7 @@ def render_answer_footer(meta: dict, n_citations: int) -> None:
 def render_answer(msg: dict, idx: int) -> None:
     st.markdown(msg["answer_markdown"])
     if msg.get("insufficient_context"):
-        html('<div class="insuf">⚠ The uploaded documents don\'t contain enough information '
+        html('<div class="insuf">The uploaded documents don\'t contain enough information '
              'to fully answer this. Try adding the relevant policy or rephrasing.</div>')
     render_citation_chips(msg.get("citations", []), idx)
     if msg.get("meta"):
@@ -786,7 +598,7 @@ def run_chat_turn(question: str) -> None:
                     trace["planning_note"] = f"intent: {data.get('intent', '—')}"
                     trace["retrieving"] = "active"
                 elif event == "grading":
-                    trace["retrieving"] = "done"          # first search is complete
+                    trace["retrieving"] = "done"
                     trace["grading"] = "active"
                 elif event == "refining":
                     trace["grading"] = "active"
@@ -845,7 +657,7 @@ def run_chat_turn(question: str) -> None:
         if msg["insufficient_context"]:
             with answer_ph.container():
                 st.markdown(final_text)
-                html('<div class="insuf">⚠ The uploaded documents don\'t contain enough '
+                html('<div class="insuf">The uploaded documents don\'t contain enough '
                      'information to fully answer this.</div>')
         with cite_ph.container():
             render_citation_chips(answer["citations"], idx)
@@ -853,20 +665,93 @@ def run_chat_turn(question: str) -> None:
             render_answer_footer(msg["meta"], len(answer["citations"]))
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-health = fetch_health()
-render_topbar(health)
+# ════════════════════════════════════════════════════════════ main-area states
+def render_hero_cold() -> None:
+    html("""
+    <div class="hero">
+        <span class="eyebrow">Retrieval-augmented · grounded · auditable</span>
+        <h1>Turn dense insurance documents into precise, cited answers</h1>
+        <p>Upload your policies, claim forms and medical reports, then ask in plain English.
+        Every answer is grounded <strong>only</strong> in your own documents and traced to the
+        exact source page — so each fact can be verified in a single click.</p>
+        <div class="hero-chips">
+            <span class="hero-chip">Hybrid search index</span>
+            <span class="hero-chip">Page-level citations</span>
+            <span class="hero-chip">Agentic evidence check</span>
+            <span class="hero-chip">Grounded answers only</span>
+        </div>
+    </div>
+    """)
 
+
+def render_howitworks() -> None:
+    html('<div class="section-title">How it works</div>'
+         '<div class="section-sub">Three stages — add documents on the left, and the answer side '
+         'unlocks the moment the first file is ready.</div>')
+    html("""
+    <div class="pipe">
+        <div class="pstep"><div class="pn"><span class="pi"></span>Ingest</div>
+            <div class="pd">Azure Document Intelligence reads the layout of every PDF, scan and report.</div></div>
+        <div class="parrow">›</div>
+        <div class="pstep"><div class="pn"><span class="pi"></span>Index</div>
+            <div class="pd">Content is classified, chunked by structure and embedded into a hybrid search index.</div></div>
+        <div class="parrow">›</div>
+        <div class="pstep"><div class="pn"><span class="pi"></span>Interrogate</div>
+            <div class="pd">Ask in natural language — every answer is cited to the exact source page for audit.</div></div>
+    </div>
+    """)
+
+
+def render_indexing_wait(in_flight: int) -> None:
+    plural = "s" if in_flight != 1 else ""
+    html(f"""
+    <div class="note center" style="padding:2.4rem 1.5rem;">
+        <div class="spinner"></div>
+        <h3 style="margin-top:.9rem;">Building your knowledge base</h3>
+        <p>Extracting, classifying and embedding {in_flight} document{plural}. Questions unlock
+        automatically the moment the first document is ready — live progress is on the left.</p>
+    </div>
+    """)
+
+
+def render_ready_welcome() -> None:
+    html("""
+    <div class="hero" style="padding:1.25rem 1.5rem;">
+        <span class="eyebrow">Knowledge base ready</span>
+        <h1 style="font-size:1.3rem;">Ask anything across your corpus</h1>
+        <p>Answers are grounded only in your documents and cited to the exact source page —
+        verifiable in one click.</p>
+    </div>
+    """)
+
+
+def render_suggestions() -> None:
+    html('<div class="microlabel">Start with a question</div>')
+    cols = st.columns(2, gap="medium")
+    for i, (icon, title, question) in enumerate(SUGGESTED_QUESTIONS):
+        with cols[i % 2]:
+            if st.button(f"**{title}**\n\n{question}", key=f"sugg_{i}",
+                         icon=icon, use_container_width=True):
+                st.session_state.pending_question = question
+                st.rerun()
+
+
+# ════════════════════════════════════════════════════════════ data + gate
+health = fetch_health()
 docs_now = fetch_documents()
 backend_ok = docs_now is not None
 ready_count = sum(1 for d in (docs_now or []) if d["status"] == "ready")
 in_flight_count = sum(1 for d in (docs_now or []) if d["status"] not in ("ready", "failed"))
 st.session_state["_corpus_polling"] = in_flight_count > 0
 
-LEFT, RIGHT = st.columns([0.33, 0.67], gap="large")
 
-with LEFT:
-    html('<div class="phead"><span class="step">1</span><span class="t">Your documents</span></div>')
+# ════════════════════════════════════════════════════════════ sidebar (shell)
+with st.sidebar:
+    html(f'<div class="brand"><div class="brand-logo">{SHIELD_SVG}</div>'
+         '<div><div class="brand-name">Insurance Doc Intelligence</div>'
+         '<div class="brand-sub">Grounded RAG</div></div></div>')
+
+    html('<div class="microlabel">Documents</div>')
     uploaded = st.file_uploader(
         "Drop PDF / DOCX / JPG / PNG / TIFF",
         type=["pdf", "docx", "jpg", "jpeg", "png", "tif", "tiff"],
@@ -875,8 +760,8 @@ with LEFT:
     if auto_ingest(uploaded):
         st.session_state["_corpus_polling"] = True
         st.rerun()
-    if st.button("📚  Load demo corpus", use_container_width=True, key="demo_side"):
-        # Guard against re-adding the same five samples on a second click.
+    if st.button("Load demo corpus", icon=":material/library_books:",
+                 use_container_width=True, key="demo_side"):
         if st.session_state.get("demo_loaded") and docs_now:
             st.toast("Demo corpus is already loaded.", icon="📚")
         elif load_demo_corpus():
@@ -884,55 +769,80 @@ with LEFT:
             st.session_state["_corpus_polling"] = True
             st.rerun()
 
-    # Poll only while ingestion is in flight; otherwise render once and stay calm.
+    # Live corpus — polls only while ingestion is in flight; otherwise renders once.
     interval = 2.0 if in_flight_count else None
     st.fragment(run_every=interval)(corpus_panel_body)()
 
-with RIGHT:
-    head = st.columns([1, 0.28])
-    with head[0]:
-        html('<div class="phead"><span class="step">2</span><span class="t">Ask your documents</span></div>')
-    with head[1]:
-        if st.session_state.messages:
-            if st.button("🆕 New chat", use_container_width=True, key="new_chat"):
-                try:
-                    requests.delete(f"{API}/sessions/{st.session_state.session_id}", timeout=4)
-                except requests.RequestException:
-                    pass
-                st.session_state.session_id = uuid.uuid4().hex[:10]
-                st.session_state.messages = []
-                st.session_state.active_citation = None
-                st.rerun()
-
-    # State-aware body: offline → cold start → indexing → ready/suggestions → chat.
-    if not backend_ok:
-        html('<div class="note err-panel"><h3>Backend not reachable</h3>'
-             '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
-             'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
-    elif st.session_state.messages or st.session_state.pending_question:
-        render_history()
-    elif ready_count == 0 and in_flight_count == 0:
-        render_cold_start()
-    elif ready_count == 0 and in_flight_count > 0:
-        render_indexing_wait(in_flight_count)
+    # System status card.
+    if health is None:
+        html('<div class="status-card">'
+             '<div class="microlabel" style="margin:0 0 .45rem;">System status</div>'
+             '<div class="status-row"><span class="dot dot-off"></span>Backend <b>offline</b></div>'
+             '<div class="status-row mono" style="color:#9A96AE;">'
+             f'session {st.session_state.session_id}</div></div>')
     else:
-        html("""
-        <div class="hero" style="padding:22px 26px;">
-            <span class="eyebrow">Knowledge base ready</span>
-            <h2 style="font-size:20px;">Ask anything across your corpus</h2>
-            <p>Answers are grounded only in your documents and cited to the exact source page — verifiable in one click.</p>
-        </div>
-        """)
-        render_suggestions()
+        services = health.get("services", {})
+        n_ok = sum(1 for v in services.values() if v)
+        n_all = len(services) or 1
+        azure_dot = "dot-on" if n_ok == n_all else ("dot-warn" if n_ok else "dot-off")
+        model = escape(health.get("chat_model", "")) or "—"
+        html(f'<div class="status-card">'
+             f'<div class="microlabel" style="margin:0 0 .45rem;">System status</div>'
+             f'<div class="status-row"><span class="dot {azure_dot}"></span>Azure services <b>{n_ok}/{n_all}</b></div>'
+             f'<div class="status-row"><span class="dot dot-on"></span>Model <b>{model}</b></div>'
+             f'<div class="status-row mono" style="color:#9A96AE;">session {st.session_state.session_id}</div>'
+             f'</div>')
+    html('<p class="tech-foot">Azure AI Search · Document Intelligence · hybrid retrieval · '
+         'agentic grounding</p>')
 
-    # Run a queued suggestion, then accept new input.
-    pending = st.session_state.pending_question
-    if pending:
-        st.session_state.pending_question = None
-        run_chat_turn(pending)
 
-    chat_ready = backend_ok and ready_count > 0
-    placeholder = ("Ask about your documents…" if chat_ready
-                   else "Add and index at least one document to start asking…")
-    if question := st.chat_input(placeholder, disabled=not chat_ready):
-        run_chat_turn(question)
+# ════════════════════════════════════════════════════════════ main (conversation)
+has_thread = bool(st.session_state.messages or st.session_state.pending_question)
+
+# Slim header row — title left, New chat right (only once a conversation exists).
+hcol = st.columns([1, 0.26], vertical_alignment="center")
+with hcol[0]:
+    html('<div class="section-title" style="margin:0;">Ask your documents</div>'
+         '<div class="section-sub" style="margin:.1rem 0 0;">Grounded, page-cited answers from your corpus.</div>')
+with hcol[1]:
+    if st.session_state.messages:
+        if st.button("New chat", icon=":material/add_comment:",
+                     use_container_width=True, key="new_chat"):
+            try:
+                requests.delete(f"{API}/sessions/{st.session_state.session_id}", timeout=4)
+            except requests.RequestException:
+                pass
+            st.session_state.session_id = uuid.uuid4().hex[:10]
+            st.session_state.messages = []
+            st.session_state.active_citation = None
+            st.rerun()
+
+st.write("")  # small breathing room under the header
+
+# State-aware body: offline → cold start → indexing → ready/suggestions → chat.
+if not backend_ok:
+    html('<div class="note err-panel"><h3>Backend not reachable</h3>'
+         '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
+         'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
+elif has_thread:
+    render_history()
+elif ready_count == 0 and in_flight_count == 0:
+    render_hero_cold()
+    render_howitworks()
+elif ready_count == 0 and in_flight_count > 0:
+    render_indexing_wait(in_flight_count)
+else:
+    render_ready_welcome()
+    render_suggestions()
+
+# Run a queued suggestion, then accept new input.
+pending = st.session_state.pending_question
+if pending:
+    st.session_state.pending_question = None
+    run_chat_turn(pending)
+
+chat_ready = backend_ok and ready_count > 0
+placeholder = ("Ask about your documents…" if chat_ready
+               else "Add and index at least one document to start asking…")
+if question := st.chat_input(placeholder, disabled=not chat_ready):
+    run_chat_turn(question)
