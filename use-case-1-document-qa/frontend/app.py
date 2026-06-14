@@ -120,7 +120,10 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 /* tighten the page rhythm, kill the top gap, hide dev chrome */
 [data-testid="stHeader"]{ background:transparent; height:0; }
 #MainMenu, footer { visibility:hidden; height:0; }
-.block-container{ padding-top:1.1rem !important; padding-bottom:7rem !important; max-width:1180px; }
+.block-container{ padding-top:1.1rem !important; padding-bottom:2rem !important; max-width:1180px; }
+/* Trim the empty gap under the pinned chat input. */
+[data-testid="stBottom"] > div{ padding-bottom:.4rem !important; }
+[data-testid="stBottomBlockContainer"]{ padding-top:.3rem !important; padding-bottom:.5rem !important; }
 [data-testid="stVerticalBlock"]{ gap:.7rem; }
 
 /* Never show the "Running…" status widget (the flash of fetch_health() etc.),
@@ -137,9 +140,10 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 .section-sub{ color:var(--ink-2); font-size:.86rem; margin:-.2rem 0 .7rem; line-height:1.45; }
 
 /* ───────────────────────── sidebar (app shell) ───────────────────────── */
-/* Wider rail so the brand title fits cleanly and never collides with the upload. */
-[data-testid="stSidebar"]{ background:#fff; border-right:1px solid var(--line-2);
-  width:340px !important; min-width:340px !important; }
+/* Wider rail so the brand title fits cleanly — but ONLY when expanded, so the
+   collapse control still hands the full width back to the main column. */
+[data-testid="stSidebar"]{ background:#fff; border-right:1px solid var(--line-2); }
+[data-testid="stSidebar"][aria-expanded="true"]{ width:340px !important; min-width:340px !important; }
 [data-testid="stSidebar"] .block-container{ padding-top:1.2rem; padding-left:1.1rem; padding-right:1.1rem; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap:.55rem; }
 /* brand is its own header band, separated from the controls below it */
@@ -216,22 +220,29 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 /* sidebar buttons full-bleed and calm */
 [data-testid="stSidebar"] .stButton button{ text-align:left; justify-content:flex-start; }
 
-/* ───────────────────────── hero ───────────────────────── */
-.hero{ border-radius:18px; padding:1.5rem 1.7rem; color:#fff; margin-bottom:1rem;
-  background:radial-gradient(1100px 380px at 0% 0%, var(--violet-2) 0%, var(--violet-3) 48%, #3B1E78 100%);
+/* ───────────────────────── hero (compact) ───────────────────────── */
+.hero{ border-radius:16px; padding:1.1rem 1.35rem; color:#fff; margin-bottom:.85rem;
+  background:radial-gradient(900px 300px at 0% 0%, var(--violet-2) 0%, var(--violet-3) 50%, #3B1E78 100%);
   box-shadow:var(--shadow-hero); position:relative; overflow:hidden; }
 .hero::before{ content:""; position:absolute; inset:0;
   background:linear-gradient(180deg,rgba(255,255,255,.10),transparent 38%); pointer-events:none; }
-.hero .eyebrow{ display:inline-block; font-size:.68rem; font-weight:700; letter-spacing:.12em;
+.hero .eyebrow{ display:inline-block; font-size:.64rem; font-weight:700; letter-spacing:.12em;
   text-transform:uppercase; color:#E9E2FF; background:rgba(255,255,255,.14);
-  border:1px solid rgba(255,255,255,.22); padding:.25rem .6rem; border-radius:999px; margin-bottom:.7rem; }
-.hero h1{ font-size:1.55rem; font-weight:800; margin:0 0 .4rem; letter-spacing:-.02em; line-height:1.14; color:#fff; }
-.hero p{ font-size:.92rem; color:#E9E2FF; margin:0; max-width:680px; line-height:1.5; }
+  border:1px solid rgba(255,255,255,.22); padding:.2rem .55rem; border-radius:999px; margin-bottom:.5rem; }
+.hero h1{ font-size:1.22rem; font-weight:800; margin:0 0 .3rem; letter-spacing:-.01em; line-height:1.2; color:#fff; }
+.hero p{ font-size:.86rem; color:#E9E2FF; margin:0; max-width:660px; line-height:1.5; }
 .hero p strong{ color:#fff; }
-.hero-chips{ display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.9rem; }
+.hero-chips{ display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.7rem; }
 .hero-chip{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.24);
-  padding:.28rem .65rem; border-radius:999px; font-size:.72rem; font-weight:600; color:#fff;
+  padding:.24rem .6rem; border-radius:999px; font-size:.7rem; font-weight:600; color:#fff;
   display:inline-flex; align-items:center; gap:.35rem; }
+
+/* capabilities strip — the tech line, moved out of the sidebar into the overview */
+.caps{ display:grid; grid-template-columns:repeat(4,1fr); gap:.6rem; margin-top:.85rem; }
+.cap{ background:#fff; border:1px solid var(--line); border-radius:12px; padding:.7rem .8rem; box-shadow:var(--shadow-sm); }
+.cap b{ display:block; font-size:.8rem; color:var(--ink); font-weight:700; margin-bottom:.15rem; }
+.cap span{ font-size:.72rem; color:var(--ink-3); line-height:1.4; }
+@media (max-width:900px){ .caps{ grid-template-columns:repeat(2,1fr); } }
 
 /* ───────────────────────── pipeline strip (how it works) ───────────────────────── */
 .pipe{ display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:.1rem 0 .3rem; }
@@ -266,20 +277,26 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 
 /* ───────────────────────── chat: assistant card (left) ───────────────────────── */
 [data-testid="stChatMessage"]{ background:#fff; border:1px solid var(--line); border-radius:16px;
-  padding:1rem 1.2rem !important; box-shadow:var(--shadow-sm); margin-bottom:.3rem; }
+  padding:1rem 1.2rem 1.2rem !important; box-shadow:var(--shadow-sm); margin-bottom:.4rem; }
 /* clean branded avatar circle (we pass a :material/shield: icon, never an emoji) */
 [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarCustom"],
 [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarAssistant"]{
   background:linear-gradient(135deg,var(--violet-2),var(--indigo)) !important; color:#fff !important; border:none; }
-/* assistant answer body: comfortable reading rhythm + crisp tables */
+/* assistant answer body: comfortable reading rhythm */
 [data-testid="stChatMessage"] p{ font-size:.95rem; line-height:1.6; }
-[data-testid="stChatMessage"] table{ border-collapse:collapse; width:100%; margin:.5rem 0; font-size:.88rem;
-  border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+/* Wide tables (e.g. 13-column comparisons) scroll horizontally INSIDE the card
+   instead of overflowing the page and colliding with other components. */
+[data-testid="stChatMessage"] table{ display:block; overflow-x:auto; white-space:nowrap; max-width:100%;
+  border-collapse:collapse; margin:.6rem 0; font-size:.86rem; }
+[data-testid="stChatMessage"] table::-webkit-scrollbar{ height:8px; }
+[data-testid="stChatMessage"] table::-webkit-scrollbar-thumb{ background:#DAD4EC; border-radius:8px; }
 [data-testid="stChatMessage"] th{ background:var(--soft); color:var(--ink); font-weight:700; text-align:left;
   padding:.5rem .7rem; border-bottom:1px solid var(--line); }
 [data-testid="stChatMessage"] td{ padding:.5rem .7rem; border-bottom:1px solid var(--line-2); color:var(--ink-2); }
 [data-testid="stChatMessage"] tr:last-child td{ border-bottom:none; }
 [data-testid="stChatMessage"] td:first-child{ color:var(--ink); font-weight:600; }
+/* footer chips never touch the card's bottom edge */
+.ans-foot{ margin-bottom:.15rem; }
 
 /* ───────────────────────── chat: user bubble (right) ───────────────────────── */
 .umsg{ display:flex; justify-content:flex-end; align-items:flex-start; gap:.55rem; margin:.2rem 0 .7rem; }
@@ -376,7 +393,11 @@ def fetch_health() -> dict | None:
         return None
 
 
+@st.cache_data(ttl=2, show_spinner=False)
 def fetch_documents() -> list[dict] | None:
+    # Cached briefly + no spinner: a single rerun touches this from both the main
+    # gate and the sidebar fragment, so caching collapses that to one call and
+    # removes the per-rerun flicker. Mutations call fetch_documents.clear().
     try:
         r = _get("/documents", timeout=5)
         return r.json() if r.ok else None
@@ -569,11 +590,23 @@ def citation_dialog(c: dict) -> None:
         return
 
     if ext == ".pdf":
+        # Chrome BLOCKS PDFs loaded via data: URIs in an iframe — that's the broken
+        # box you saw. A blob: URL built client-side renders fine, so we ship the
+        # bytes as base64 and convert to a Blob in the browser.
         b64 = base64.b64encode(data).decode()
         components.html(
-            f'<iframe src="data:application/pdf;base64,{b64}#page={c["page"]}" '
-            f'width="100%" height="560" style="border:1px solid #ECE9F4;border-radius:10px;"></iframe>',
-            height=580,
+            f"""<div id="pv" style="height:560px;border:1px solid #ECE9F4;border-radius:10px;overflow:hidden"></div>
+<script>
+(function(){{
+  const raw=atob("{b64}"), arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  const url=URL.createObjectURL(new Blob([arr],{{type:"application/pdf"}}));
+  const f=document.createElement("iframe");
+  f.src=url+"#page={c['page']}"; f.style.width="100%"; f.style.height="560px"; f.style.border="none";
+  document.getElementById("pv").appendChild(f);
+}})();
+</script>""",
+            height=576,
         )
     elif ext in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
         st.image(data, use_container_width=True)
@@ -753,20 +786,26 @@ def run_chat_turn(question: str) -> None:
 
 
 # ════════════════════════════════════════════════════════════ main-area states
+def render_capabilities() -> None:
+    """The platform's capabilities, as a structured strip on the overview — this
+    replaces the cramped tech line that used to sit in the sidebar."""
+    html("""
+    <div class="caps">
+        <div class="cap"><b>Azure AI Search</b><span>Hybrid BM25 + vector retrieval</span></div>
+        <div class="cap"><b>Document Intelligence</b><span>Layout-aware extraction &amp; OCR</span></div>
+        <div class="cap"><b>Page-level citations</b><span>Every fact traced to its source</span></div>
+        <div class="cap"><b>Agentic grounding</b><span>Evidence checked before answering</span></div>
+    </div>
+    """)
+
+
 def render_hero_cold() -> None:
     html("""
     <div class="hero">
-        <span class="eyebrow">Retrieval-augmented · grounded · auditable</span>
-        <h1>Turn dense insurance documents into precise, cited answers</h1>
-        <p>Upload your policies, claim forms and medical reports, then ask in plain English.
-        Every answer is grounded <strong>only</strong> in your own documents and traced to the
-        exact source page — so each fact can be verified in a single click.</p>
-        <div class="hero-chips">
-            <span class="hero-chip">Hybrid search index</span>
-            <span class="hero-chip">Page-level citations</span>
-            <span class="hero-chip">Agentic evidence check</span>
-            <span class="hero-chip">Grounded answers only</span>
-        </div>
+        <span class="eyebrow">Grounded · cited · auditable</span>
+        <h1>Ask your insurance documents, get cited answers</h1>
+        <p>Upload policies, claim forms and medical reports, then ask in plain English —
+        every answer is grounded <strong>only</strong> in your documents and traced to the exact page.</p>
     </div>
     """)
 
@@ -803,11 +842,10 @@ def render_indexing_wait(in_flight: int) -> None:
 
 def render_ready_welcome() -> None:
     html("""
-    <div class="hero" style="padding:1.25rem 1.5rem;">
+    <div class="hero">
         <span class="eyebrow">Knowledge base ready</span>
-        <h1 style="font-size:1.3rem;">Ask anything across your corpus</h1>
-        <p>Answers are grounded only in your documents and cited to the exact source page —
-        verifiable in one click.</p>
+        <h1>Ask anything across your corpus</h1>
+        <p>Answers are grounded only in your documents and cited to the exact source page — verifiable in one click.</p>
     </div>
     """)
 
@@ -845,6 +883,7 @@ with st.sidebar:
         accept_multiple_files=True, label_visibility="collapsed", key="uploader",
     )
     if auto_ingest(uploaded):
+        fetch_documents.clear()
         st.session_state["_corpus_polling"] = True
         st.rerun()
     if st.button("Load demo corpus", icon=":material/library_books:",
@@ -852,6 +891,7 @@ with st.sidebar:
         # De-dupe is now content-based inside load_demo_corpus(): it skips samples
         # already present and toasts "already loaded" when there's nothing new.
         if load_demo_corpus():
+            fetch_documents.clear()
             st.session_state["_corpus_polling"] = True
             st.rerun()
 
@@ -879,8 +919,6 @@ with st.sidebar:
              f'<div class="status-row"><span class="dot {svc_dot}"></span>Azure services <b>{n_ok}/{n_all}</b></div>'
              f'<div class="status-row mono" style="color:#9A96AE;">session {st.session_state.session_id}</div>'
              f'</div>')
-    html('<p class="tech-foot">Azure AI Search · Document Intelligence · hybrid retrieval · '
-         'agentic grounding</p>')
 
 
 # ════════════════════════════════════════════════════════════ main (conversation)
@@ -930,8 +968,10 @@ elif has_thread:
 elif ready_count == 0 and in_flight_count == 0:
     render_hero_cold()
     render_howitworks()
+    render_capabilities()
 elif ready_count == 0 and in_flight_count > 0:
     render_indexing_wait(in_flight_count)
 else:
     render_ready_welcome()
     render_suggestions()
+    render_capabilities()

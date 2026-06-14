@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # Fire a tiny chat+embed call on startup so the first real query doesn't pay
     # the serverless cold-start. Runs in a daemon thread, so boot is not blocked.
     warmup_on_startup: bool = True
+    # Periodically ping the Azure embedding deployment so a scale-to-zero resource
+    # stays warm — otherwise the first query after an idle gap pays a multi-second
+    # cold-start on the embed call (visible as a large retrieve_ms). 0 disables.
+    embed_keepalive_seconds: int = 240
 
     # Hard ceiling on any single LLM/HTTP round-trip, so a hung serverless call
     # fails fast instead of wedging an ingestion worker or a chat turn forever.

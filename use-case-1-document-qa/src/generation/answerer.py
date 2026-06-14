@@ -45,9 +45,9 @@ _ANSWER_RULES = """GROUND TRUTH (non-negotiable)
 STRUCTURE (adapt to the question — don't force every part)
 1. Lead with a one-sentence DIRECT answer to exactly what was asked, key figures in **bold**.
 2. Then the detail that matters: conditions, sub-limits, the deductible/co-pay interplay, waiting periods, exclusions and eligibility — only what's relevant.
-3. Use a compact Markdown table when reporting several structured values, or when comparing documents/plans — one row per item or plan, with a citation in each row.
+3. Use a compact Markdown table when reporting several structured values, or when comparing documents/plans — one row per item or plan, with a citation in each row. Compare ONLY the specific dimensions the user asked about; never add unrequested columns (a focused 3-column table beats a sprawling one).
 4. Use bullet points for lists of conditions, exclusions or steps.
-5. For extraction questions (claim forms, medical reports), return a clean two-column "Field | Value" table of exactly the fields requested.
+5. For extraction questions (claim forms, medical reports), return a clean two-column "Field | Value" table of exactly the fields requested — and put the source id after each value, e.g. "Jane Q. Member [1]", so every extracted field is cited.
 
 STYLE
 - Write for insurance operations staff who need a defensible, audit-ready answer.

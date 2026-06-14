@@ -8,6 +8,7 @@ Two execution shapes share the same pipeline:
   done) in real time. Every intelligent step is still an Azure-AI call; the
   events are just observability over the same plan/retrieve/grade/generate pipeline."""
 import re
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -194,6 +195,7 @@ def stream_answer(session_id: str, question: str,
             yield "done", resp.model_dump()
             return
 
+        _t0 = time.perf_counter()
         yield "planning", {"message": "Rewriting your question into a standalone query…"}
         plan = _plan(history, question)
         yield "planned", {"standalone_query": plan.standalone_query, "intent": plan.intent}
@@ -207,12 +209,14 @@ def stream_answer(session_id: str, question: str,
         # Non-'chunks' events are the live trace for the grading/refining steps.
         # The generator now emits 'retrieved' (search summary) itself, before the
         # grading events, so the trace lights up strictly top-to-bottom.
+        _t_plan = time.perf_counter()
         chunks: list[RetrievedChunk] = []
         for stage, payload in _retrieve_agentic(plan):
             if stage == "chunks":
                 chunks = payload
             else:
                 yield stage, payload
+        _t_ret = time.perf_counter()
         log.info("retrieved", count=len(chunks),
                  top_score=max((c.score for c in chunks), default=0.0))
 
@@ -225,6 +229,14 @@ def stream_answer(session_id: str, question: str,
                 yield "token", {"delta": payload}
             elif event_type == "final":
                 final_answer = payload  # type: ignore[assignment]
+        # Per-stage timing so latency is attributable at a glance in the backend
+        # console: plan_ms (LLM rewrite; ~0 on a first turn) · retrieve_ms (query
+        # embedding + Azure Search — a cold embedding deployment shows up HERE) ·
+        # generate_ms (Gemini token stream).
+        log.info("turn_timing", intent=plan.intent,
+                 plan_ms=int((_t_plan - _t0) * 1000),
+                 retrieve_ms=int((_t_ret - _t_plan) * 1000),
+                 generate_ms=int((time.perf_counter() - _t_ret) * 1000))
         assert final_answer is not None, "stream_answer_tokens must yield a 'final' event"
         if final_answer.insufficient_context:
             final_answer.citations = []

@@ -109,10 +109,25 @@ def _boot_tasks() -> None:
         _warmup()
 
 
+def _keepalive_loop() -> None:
+    """Keep the Azure embedding deployment warm so queries don't pay a cold-start."""
+    interval = get_settings().embed_keepalive_seconds
+    if interval <= 0:
+        return
+    from src.indexing.embedder import embed_query
+    while True:
+        time.sleep(interval)
+        try:
+            embed_query("keepalive")
+        except Exception as exc:
+            log.info("keepalive_skipped", error=type(exc).__name__)
+
+
 @app.on_event("startup")
 def startup() -> None:
     import threading
     threading.Thread(target=_boot_tasks, name="boot", daemon=True).start()
+    threading.Thread(target=_keepalive_loop, name="keepalive", daemon=True).start()
     log.info("startup_complete")
 
 
