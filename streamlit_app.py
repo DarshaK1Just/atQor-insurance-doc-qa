@@ -43,40 +43,38 @@ except Exception:
 def _start_backend() -> str:
     """Spin up uvicorn in a daemon thread and return the base URL."""
     import uvicorn
-    import socket
+    import logging
 
-    def _find_free_port() -> int:
-        """Find an available port."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-        return port
-
-    port = _find_free_port()
+    port = 8000  # Fixed port that frontend expects
 
     def _serve() -> None:
         try:
+            # Configure uvicorn logger
+            uvicorn_logger = logging.getLogger("uvicorn")
+            uvicorn_logger.setLevel(logging.INFO)
+            
             uvicorn.run(
                 "src.api.main:app",
-                host="127.0.0.1",
+                host="0.0.0.0",  # Listen on all interfaces for cloud environments
                 port=port,
                 log_level="info",
                 access_log=True,
             )
         except Exception as e:
+            import streamlit as st
             st.error(f"Backend startup failed: {e}")
+            raise
 
     threading.Thread(target=_serve, name="fastapi-backend", daemon=True).start()
-    # Give uvicorn more time to bind the port on cloud environments
-    time.sleep(8)
+    # Give uvicorn time to bind the port on cloud environments
+    time.sleep(10)
     return f"http://127.0.0.1:{port}"
 
 
 _api_url = _start_backend()
 
 # Tell the frontend where the API lives (it reads API_BASE_URL at exec time).
-os.environ.setdefault("API_BASE_URL", _api_url)
+os.environ["API_BASE_URL"] = _api_url  # Force override, don't use setdefault
 
 # ── 4. Run the Streamlit frontend in-process ──────────────────────────────────
 # Override __file__ in the exec namespace so the SAMPLE_DIR path calculation
