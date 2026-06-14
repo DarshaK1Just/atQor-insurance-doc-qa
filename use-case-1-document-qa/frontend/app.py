@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import textwrap
 import uuid
 from html import escape
@@ -117,8 +118,11 @@ st.markdown("""
 html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--ink); }
 .stApp { background:var(--bg); }
 
-/* tighten the page rhythm, kill the top gap, hide dev chrome */
-[data-testid="stHeader"]{ background:transparent; height:0; }
+/* tighten the page rhythm, kill the top gap, hide dev chrome.
+   overflow:visible is CRITICAL — the collapsed-sidebar re-open button lives in
+   this 0-height header; without it the button is clipped and the sidebar can't
+   be brought back. */
+[data-testid="stHeader"]{ background:transparent; height:0; overflow:visible; }
 #MainMenu, footer { visibility:hidden; height:0; }
 .block-container{ padding-top:1.1rem !important; padding-bottom:2rem !important; max-width:1180px; }
 /* Trim the empty gap under the pinned chat input. */
@@ -129,6 +133,10 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 /* Never show the "Running…" status widget (the flash of fetch_health() etc.),
    and never dim/blur the page while a rerun is in flight. */
 [data-testid="stStatusWidget"], [data-testid="stToolbar"]{ display:none !important; }
+/* ALWAYS keep the sidebar collapse/expand controls clickable and on top so the
+   sidebar can never get stuck hidden. */
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"]{
+  visibility:visible !important; opacity:1 !important; display:flex !important; z-index:1001 !important; }
 [data-stale="true"], [data-stale="true"] *{ opacity:1 !important; }
 [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] *{ transition:none !important; }
 [data-testid="stSkeleton"]{ display:none !important; }
@@ -350,10 +358,14 @@ def html(markup: str) -> None:
 
 
 def _md(text: str) -> str:
-    """Escape '$' before st.markdown. Streamlit renders `$…$` as LaTeX math, which
-    silently ate dollar amounts and bold markers in answers ('$20,000 ... **' →
-    rendered as italic math). Escaping makes currency render literally."""
-    return (text or "").replace("$", "\\$")
+    """Prepare answer markdown for st.markdown:
+    1. Escape '$' — Streamlit renders `$…$` as LaTeX math, which silently ate
+       dollar amounts and bold markers ('$20,000 ... **' became italic math).
+    2. Insert a blank line before a markdown table — without it Streamlit prints
+       the raw pipes and a long dash run (the 'infinite ----') instead of a table."""
+    t = (text or "").replace("$", "\\$")
+    t = re.sub(r"([^\n|])\n(\|[^\n]*\|)", r"\1\n\n\2", t)
+    return t
 
 
 def render_user_msg(text: str) -> None:
