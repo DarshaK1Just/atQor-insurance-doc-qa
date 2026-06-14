@@ -85,13 +85,23 @@ _COMPARISON_HINTS = (
 )
 
 
+# Extraction / summarisation verbs signal that the question text itself is NOT a
+# good search query — the planner must condense it to a short keyword phrase.
+_NEEDS_PLANNING_RE = re.compile(
+    r"\b(extract|summaris[ez]|describe|list the|give me|provide me|break down|"
+    r"calculate|eligib|verify|check if|out-of-pocket|walk me|overview of)\b",
+    re.IGNORECASE,
+)
+
+
 def _plan(history: list[dict], question: str) -> QueryPlan:
     """Resolve the question to a standalone query + intent.
 
     PERF: with no prior turn there's nothing to coreference, so we skip the
-    planner's LLM round-trip and route intent with keywords. The LLM planner is
-    used only for follow-ups, where pronoun/reference resolution actually matters."""
-    if not history:
+    planner's LLM round-trip and route intent with keywords — but ONLY for
+    short, direct questions. Long or extraction-style questions send a bad
+    embedding vector to the index and must be condensed by the planner first."""
+    if not history and len(question) <= 120 and not _NEEDS_PLANNING_RE.search(question):
         q = f" {question.lower()} "
         intent = "comparison" if any(h in q for h in _COMPARISON_HINTS) else "simple"
         return QueryPlan(standalone_query=question.strip(), intent=intent)
