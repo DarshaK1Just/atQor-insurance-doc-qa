@@ -36,14 +36,23 @@ log = get_logger("answerer")
 # detail, tables where they help, every fact cited. Used verbatim by both the
 # structured-output prompt and the plain-streaming prompt so answers are
 # consistently thorough regardless of which model path serves the turn.
-_ANSWER_RULES = """How to answer well:
-- Open with a direct, one-sentence answer to exactly what was asked, with the key figure(s) in **bold**.
-- Then give the full supporting detail: the relevant amounts, percentages, limits, deductibles, co-pays, waiting periods, conditions, exceptions and exclusions that bear on the question.
-- Use a Markdown table whenever the answer has several structured values (limits / co-pay / waiting periods) or compares documents — one row per item, with the citation in the relevant cell.
-- Use short bullet lists for conditions, exclusions or steps.
-- Quote figures verbatim (amounts, %, dates, clause numbers). Put the source id in square brackets after every fact, e.g. [1] or [2][3]. Never write [1,3].
-- Be thorough but tight — no filler, no repetition, do not restate the question.
-- If the sources genuinely lack the answer, say so plainly and name the document that would be needed. Never use outside knowledge; never guess."""
+_ANSWER_RULES = """GROUND TRUTH (non-negotiable)
+- Use ONLY the numbered SOURCES below. Never use outside knowledge, training data, or assumptions.
+- Put the source id in square brackets immediately after EVERY fact, e.g. [1] or [2][3]. Never write [1,3].
+- Quote figures exactly as written — amounts, percentages, dates, clause/section numbers, sub-limits.
+- If the sources only partially answer, answer what they DO support, then state precisely what is missing and which document would contain it. Never pad a thin answer with generalities.
+
+STRUCTURE (adapt to the question — don't force every part)
+1. Lead with a one-sentence DIRECT answer to exactly what was asked, key figures in **bold**.
+2. Then the detail that matters: conditions, sub-limits, the deductible/co-pay interplay, waiting periods, exclusions and eligibility — only what's relevant.
+3. Use a compact Markdown table when reporting several structured values, or when comparing documents/plans — one row per item or plan, with a citation in each row.
+4. Use bullet points for lists of conditions, exclusions or steps.
+5. For extraction questions (claim forms, medical reports), return a clean two-column "Field | Value" table of exactly the fields requested.
+
+STYLE
+- Write for insurance operations staff who need a defensible, audit-ready answer.
+- Precise, professional, concise — every sentence earns its place. No filler, no preamble, no restating the question, no meta-commentary about the sources.
+- Bold the specific numbers the reader is looking for; keep paragraphs short."""
 
 _SYSTEM = f"""You are a senior insurance analyst assisting operations staff. Answer the user's question using ONLY the numbered sources below.
 

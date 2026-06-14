@@ -34,6 +34,7 @@ Key engineering decisions (and the bugs they retire):
 The UI talks only to the FastAPI backend. No Azure SDK calls here."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import textwrap
@@ -81,6 +82,14 @@ SHIELD_SVG = (
     '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
     '<path d="m9 12 2 2 4-4"/></svg>'
 )
+# Person glyph for the (right-aligned) user bubble avatar — clean line icon, no emoji.
+USER_SVG = (
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
+)
+# Assistant avatar — a Material shield icon (Streamlit renders it cleanly; not an emoji).
+ASSISTANT_AVATAR = ":material/shield:"
 
 st.set_page_config(
     page_title="Insurance Document Intelligence",
@@ -255,13 +264,30 @@ html, body, [class*="css"], .stApp { font-family:'Inter',system-ui,-apple-system
 .trace .note-r{ font-size:.72rem; color:var(--ink-3); margin-left:auto; font-weight:500; }
 .trace .row.active .ic{ animation:spin 1.1s linear infinite; display:inline-block; }
 
-/* ───────────────────────── chat bubbles ───────────────────────── */
-[data-testid="stChatMessage"]{ background:#fff; border:1px solid var(--line); border-radius:14px;
-  padding:.95rem 1.15rem !important; box-shadow:var(--shadow-sm); margin-bottom:.2rem; }
+/* ───────────────────────── chat: assistant card (left) ───────────────────────── */
+[data-testid="stChatMessage"]{ background:#fff; border:1px solid var(--line); border-radius:16px;
+  padding:1rem 1.2rem !important; box-shadow:var(--shadow-sm); margin-bottom:.3rem; }
+/* clean branded avatar circle (we pass a :material/shield: icon, never an emoji) */
 [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarCustom"],
-[data-testid="stChatMessage"] [data-testid="stChatMessageAvatarUser"],
 [data-testid="stChatMessage"] [data-testid="stChatMessageAvatarAssistant"]{
   background:linear-gradient(135deg,var(--violet-2),var(--indigo)) !important; color:#fff !important; border:none; }
+/* assistant answer body: comfortable reading rhythm + crisp tables */
+[data-testid="stChatMessage"] p{ font-size:.95rem; line-height:1.6; }
+[data-testid="stChatMessage"] table{ border-collapse:collapse; width:100%; margin:.5rem 0; font-size:.88rem;
+  border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+[data-testid="stChatMessage"] th{ background:var(--soft); color:var(--ink); font-weight:700; text-align:left;
+  padding:.5rem .7rem; border-bottom:1px solid var(--line); }
+[data-testid="stChatMessage"] td{ padding:.5rem .7rem; border-bottom:1px solid var(--line-2); color:var(--ink-2); }
+[data-testid="stChatMessage"] tr:last-child td{ border-bottom:none; }
+[data-testid="stChatMessage"] td:first-child{ color:var(--ink); font-weight:600; }
+
+/* ───────────────────────── chat: user bubble (right) ───────────────────────── */
+.umsg{ display:flex; justify-content:flex-end; align-items:flex-start; gap:.55rem; margin:.2rem 0 .7rem; }
+.umsg .ubub{ background:linear-gradient(135deg,var(--violet-2),var(--indigo)); color:#fff;
+  padding:.6rem .95rem; border-radius:16px 16px 4px 16px; max-width:78%; font-size:.95rem; line-height:1.5;
+  box-shadow:0 4px 12px rgba(91,33,182,.22); overflow-wrap:anywhere; }
+.umsg .uav{ width:34px; height:34px; border-radius:10px; flex:0 0 34px; display:grid; place-items:center;
+  background:#EDE9FE; color:var(--violet-3); margin-top:.05rem; }
 
 /* ───────────────────────── chat input — force light, never dark ───────────────────────── */
 [data-testid="stBottom"], [data-testid="stBottomBlockContainer"]{ background:transparent !important; }
@@ -306,6 +332,19 @@ def html(markup: str) -> None:
     st.markdown(textwrap.dedent(markup).strip(), unsafe_allow_html=True)
 
 
+def _md(text: str) -> str:
+    """Escape '$' before st.markdown. Streamlit renders `$…$` as LaTeX math, which
+    silently ate dollar amounts and bold markers in answers ('$20,000 ... **' →
+    rendered as italic math). Escaping makes currency render literally."""
+    return (text or "").replace("$", "\\$")
+
+
+def render_user_msg(text: str) -> None:
+    """A right-aligned user bubble with a clean avatar — the ChatGPT/Claude vibe."""
+    html(f'<div class="umsg"><div class="ubub">{escape(text)}</div>'
+         f'<div class="uav">{USER_SVG}</div></div>')
+
+
 def _ss(key: str, default: Any) -> None:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -328,7 +367,7 @@ def _post(path: str, **kw) -> requests.Response:
     return requests.post(f"{API}{path}", timeout=kw.pop("timeout", 180), **kw)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_health() -> dict | None:
     try:
         r = _get("/health", timeout=3)
@@ -509,20 +548,39 @@ def load_demo_corpus() -> bool:
 def citation_dialog(c: dict) -> None:
     st.markdown(f"#### [{c['source_id']}] {c['doc_name']} · page {c['page']}")
     st.caption("Verbatim quote from the source")
-    st.info(c.get("quote", ""))
+    st.info(_md(c.get("quote", "")))
     doc_id = c.get("doc_id")
     if not doc_id:
         st.caption("Source document id unavailable for this citation.")
         return
-    file_url = f"{API}/documents/{doc_id}/file"
+
+    # Fetch the original SERVER-SIDE and embed it inline. The browser may be on a
+    # different host than the API (e.g. it sees the server's LAN IP, not its
+    # localhost), so a raw <iframe src="http://localhost:8000/…"> resolves to the
+    # *viewer's* machine and Chrome blocks it. Pulling the bytes here and inlining
+    # them as a data-URI / st.image makes the preview work regardless of network.
     ext = Path(c["doc_name"]).suffix.lower()
-    st.markdown(f"**Original document — [open in new tab ↗]({file_url})**")
+    try:
+        resp = requests.get(f"{API}/documents/{doc_id}/file", timeout=15)
+        resp.raise_for_status()
+        data = resp.content
+    except requests.RequestException as exc:
+        st.warning(f"Couldn't load the original document for preview ({exc}).")
+        return
+
     if ext == ".pdf":
-        components.iframe(f"{file_url}#page={c['page']}", height=620, scrolling=True)
+        b64 = base64.b64encode(data).decode()
+        components.html(
+            f'<iframe src="data:application/pdf;base64,{b64}#page={c["page"]}" '
+            f'width="100%" height="560" style="border:1px solid #ECE9F4;border-radius:10px;"></iframe>',
+            height=580,
+        )
     elif ext in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
-        st.image(file_url, use_container_width=True)
+        st.image(data, use_container_width=True)
     else:
-        st.caption(f"{ext.upper()} preview not supported inline; use the link above.")
+        st.caption(f"{ext.upper()} preview not supported inline — use the download below.")
+    st.download_button("Download original", data, file_name=c["doc_name"],
+                       use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════ chat rendering
@@ -577,7 +635,7 @@ def render_answer_footer(meta: dict, n_citations: int) -> None:
 
 
 def render_answer(msg: dict, idx: int) -> None:
-    st.markdown(msg["answer_markdown"])
+    st.markdown(_md(msg["answer_markdown"]))
     if msg.get("insufficient_context"):
         html('<div class="insuf">The uploaded documents don\'t contain enough information '
              'to fully answer this. Try adding the relevant policy or rephrasing.</div>')
@@ -589,10 +647,9 @@ def render_answer(msg: dict, idx: int) -> None:
 def render_history() -> None:
     for idx, m in enumerate(st.session_state.messages):
         if m["role"] == "user":
-            with st.chat_message("user", avatar="🧑‍💼"):
-                st.markdown(m["content"])
+            render_user_msg(m["content"])
         else:
-            with st.chat_message("assistant", avatar="🛡️"):
+            with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                 render_answer(m, idx)
 
 
@@ -601,22 +658,28 @@ def run_chat_turn(question: str) -> None:
     `st.rerun()` — everything renders into stable placeholders, then the message
     is appended so the next natural rerun finds it in history."""
     st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user", avatar="🧑‍💼"):
-        st.markdown(question)
+    render_user_msg(question)
 
-    with st.chat_message("assistant", avatar="🛡️"):
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         trace_ph = st.empty()
         answer_ph = st.empty()
         cite_ph = st.empty()
         foot_ph = st.empty()
 
         trace: dict[str, str] = {"planning": "active"}
+        chitchat = False
         trace_ph.markdown(render_trace_html(trace), unsafe_allow_html=True)
 
         buffer, final = "", None
         try:
             for event, data in stream_chat(question):
                 if event == "planned":
+                    # Greetings/small-talk get a friendly reply with no retrieval —
+                    # hide the reasoning trace entirely for those turns.
+                    if data.get("intent") == "chitchat":
+                        chitchat = True
+                        trace_ph.empty()
+                        continue
                     trace["planning"] = "done"
                     trace["planning_note"] = f"intent: {data.get('intent', '—')}"
                     trace["retrieving"] = "active"
@@ -639,7 +702,7 @@ def run_chat_turn(question: str) -> None:
                     trace["generating"] = "active"
                 elif event == "token":
                     buffer += data.get("delta", "")
-                    answer_ph.markdown(buffer + " ▌")
+                    answer_ph.markdown(_md(buffer) + " ▌")
                     continue
                 elif event == "done":
                     trace["generating"] = "done"
@@ -647,7 +710,8 @@ def run_chat_turn(question: str) -> None:
                 elif event == "error":
                     answer_ph.error(f"Answer generation failed: {data.get('error', 'unknown')}")
                     return
-                trace_ph.markdown(render_trace_html(trace), unsafe_allow_html=True)
+                if not chitchat:
+                    trace_ph.markdown(render_trace_html(trace), unsafe_allow_html=True)
         except requests.RequestException as exc:
             answer_ph.error(f"Request failed: {exc}")
             return
@@ -665,7 +729,7 @@ def run_chat_turn(question: str) -> None:
         final_text = answer["answer_markdown"]
         if len(buffer) > len(final_text):
             final_text = buffer
-        answer_ph.markdown(final_text)
+        answer_ph.markdown(_md(final_text))
 
         msg = {
             "role": "assistant",
@@ -679,7 +743,7 @@ def run_chat_turn(question: str) -> None:
         idx = len(st.session_state.messages) - 1
         if msg["insufficient_context"]:
             with answer_ph.container():
-                st.markdown(final_text)
+                st.markdown(_md(final_text))
                 html('<div class="insuf">The uploaded documents don\'t contain enough '
                      'information to fully answer this.</div>')
         with cite_ph.container():
@@ -820,11 +884,23 @@ with st.sidebar:
 
 
 # ════════════════════════════════════════════════════════════ main (conversation)
-has_thread = bool(st.session_state.messages or st.session_state.pending_question)
+# Capture chat input FIRST (it stays pinned to the bottom visually regardless of
+# where it's called). Routing it through pending_question — exactly like a
+# suggestion click — means a typed question never renders the hero/suggestions
+# behind the answer, and unifies both entry paths into one render branch.
+chat_ready = backend_ok and ready_count > 0
+placeholder = ("Ask about your documents…" if chat_ready
+               else "Add and index at least one document to start asking…")
+typed = st.chat_input(placeholder, disabled=not chat_ready)
+if typed:
+    st.session_state.pending_question = typed
 
-# No redundant standing header — the hero carries the messaging on the empty
-# state. Once a conversation exists, show only a slim bar with a New-chat action.
-if st.session_state.messages:
+pending = st.session_state.pending_question
+has_thread = bool(st.session_state.messages or pending)
+
+# Slim conversation bar with a New-chat action — visible the moment a thread
+# exists (including the very first turn, since `pending` is already set).
+if has_thread:
     bar = st.columns([1, 0.22], vertical_alignment="center")
     with bar[0]:
         html('<div class="microlabel" style="margin:.1rem 0 0;">Conversation</div>')
@@ -838,15 +914,19 @@ if st.session_state.messages:
             st.session_state.session_id = uuid.uuid4().hex[:10]
             st.session_state.messages = []
             st.session_state.active_citation = None
+            st.session_state.pending_question = None
             st.rerun()
 
-# State-aware body: offline → cold start → indexing → ready/suggestions → chat.
+# State-aware body: offline → conversation → cold start → indexing → suggestions.
 if not backend_ok:
     html('<div class="note err-panel"><h3>Backend not reachable</h3>'
          '<p>Start the API with <code>uvicorn src.api.main:app</code> and confirm it is '
          'listening on <code>http://localhost:8000</code>, then reload this page.</p></div>')
 elif has_thread:
     render_history()
+    if pending:
+        st.session_state.pending_question = None
+        run_chat_turn(pending)
 elif ready_count == 0 and in_flight_count == 0:
     render_hero_cold()
     render_howitworks()
@@ -855,15 +935,3 @@ elif ready_count == 0 and in_flight_count > 0:
 else:
     render_ready_welcome()
     render_suggestions()
-
-# Run a queued suggestion, then accept new input.
-pending = st.session_state.pending_question
-if pending:
-    st.session_state.pending_question = None
-    run_chat_turn(pending)
-
-chat_ready = backend_ok and ready_count > 0
-placeholder = ("Ask about your documents…" if chat_ready
-               else "Add and index at least one document to start asking…")
-if question := st.chat_input(placeholder, disabled=not chat_ready):
-    run_chat_turn(question)

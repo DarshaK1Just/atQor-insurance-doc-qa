@@ -7,6 +7,7 @@ Two execution shapes share the same pipeline:
   UI can show an 'agentic trace' (planning → retrieving → grading → generating →
   done) in real time. Every intelligent step is still an Azure-AI call; the
   events are just observability over the same plan/retrieve/grade/generate pipeline."""
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -21,6 +22,38 @@ from src.retrieval.retrieval_grader import grade_retrieval
 from src.retrieval.searcher import RetrievedChunk, comparison_search, hybrid_search
 
 log = get_logger("rag_service")
+
+# Greetings / thanks / "who are you" shouldn't trigger a document search (which
+# would otherwise return an awkward "insufficient context"). We answer those
+# conversationally and point the user at what the assistant can actually do.
+_SMALLTALK_RE = re.compile(
+    r"^[\s\W]*(hi+|hey+|hello+|heya|hiya|yo|hola|namaste|howdy|sup|"
+    r"good\s*(morning|afternoon|evening|day)|greetings|"
+    r"thanks?|thank\s*you|thx|ty|cheers|"
+    r"ok(ay)?|cool|nice|great|awesome|got\s*it|"
+    r"how\s*are\s*you|who\s*are\s*you|what\s*can\s*you\s*do|what\s*do\s*you\s*do|"
+    r"help|bye|goodbye|see\s*you)[\s\W]*$",
+    re.IGNORECASE,
+)
+_SMALLTALK_REPLY = (
+    "Hello! I'm your **insurance document assistant**. I answer questions grounded "
+    "only in your uploaded policies, claims and medical reports — and I cite the exact "
+    "source page for every fact.\n\n"
+    "Here are a few things you can ask me:\n"
+    "- *What is the annual outpatient limit, deductible and co-payment under the Gold Shield policy?*\n"
+    "- *Extract the claimant name, policy number and claimed amount from the CF-102 claim form.*\n"
+    "- *Compare the deductibles and annual limits across all policies.*"
+)
+
+
+def _is_smalltalk(text: str) -> bool:
+    t = (text or "").strip()
+    return 0 < len(t) <= 40 and bool(_SMALLTALK_RE.match(t))
+
+
+def _smalltalk_answer() -> GroundedAnswer:
+    return GroundedAnswer(answer_markdown=_SMALLTALK_REPLY, citations=[],
+                          insufficient_context=False, confidence="high")
 
 
 def _to_sources(chunks: list[RetrievedChunk]) -> list[SourceChunk]:
@@ -115,6 +148,9 @@ def answer_question(session_id: str, question: str, history: list[dict]) -> Chat
     correlation_id = new_correlation_id("chat")
     structlog.contextvars.bind_contextvars(session_id=session_id, correlation_id=correlation_id)
     try:
+        if _is_smalltalk(question):
+            return ChatResponse(session_id=session_id, standalone_query=question,
+                                intent="chitchat", answer=_smalltalk_answer(), sources=[])
         plan = _plan(history, question)
         chunks: list[RetrievedChunk] = []
         for stage, payload in _retrieve_agentic(plan):
@@ -148,6 +184,16 @@ def stream_answer(session_id: str, question: str,
     correlation_id = new_correlation_id("chat")
     structlog.contextvars.bind_contextvars(session_id=session_id, correlation_id=correlation_id)
     try:
+        # Greeting / small-talk: reply conversationally, no retrieval, no trace.
+        if _is_smalltalk(question):
+            yield "planned", {"standalone_query": question, "intent": "chitchat"}
+            yield "generating", {"message": "Replying…"}
+            yield "token", {"delta": _SMALLTALK_REPLY}
+            resp = ChatResponse(session_id=session_id, standalone_query=question,
+                                intent="chitchat", answer=_smalltalk_answer(), sources=[])
+            yield "done", resp.model_dump()
+            return
+
         yield "planning", {"message": "Rewriting your question into a standalone query…"}
         plan = _plan(history, question)
         yield "planned", {"standalone_query": plan.standalone_query, "intent": plan.intent}
